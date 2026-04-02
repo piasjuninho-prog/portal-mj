@@ -7,9 +7,8 @@ from datetime import datetime
 st.set_page_config(page_title="Portal MJ Soluções", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO SEGURA ---
-SUPABASE_URL = st.secrets["supabase"]["https://oiuyklgtcazbtuvwmelv.supabase.co"]
-SUPABASE_KEY = st.secrets["supabase"]["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"]
-
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
 # Função para converter a data do robô (Traduzindo meses PT-BR)
