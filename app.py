@@ -1,92 +1,101 @@
 import streamlit as st
 import pandas as pd
-from st_supabase_connection import SupabaseConnection
-from datetime import datetime
+from supabase import create_client, Client
+import streamlit_authenticator as stauth
+from streamlit_autorefresh import st_autorefresh
 
-# Configuração visual profissional
-st.set_page_config(page_title="Portal MJ Soluções", layout="wide", initial_sidebar_state="expanded")
+# --- 1. CONFIGURAÇÕES DO SUPABASE ---
+SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" # Use a sua Secret ou Anon Key
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- CONEXÃO ---
-SUPABASE_URL = st.secrets["supabase"]["url"]
-SUPABASE_KEY = st.secrets["supabase"]["key"]
-conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
+# --- 2. CONFIGURAÇÃO DE LOGIN E COOKIE ---
+# Aqui definimos o usuário. Você pode mudar a senha abaixo.
+# A senha deve estar criptografada, mas para facilitar, o stauth cuida disso.
+credentials = {
+    "usernames": {
+        "admin": {
+            "name": "Marivaldo Júnior",
+            "password": "sua_senha_aqui" # Digite sua senha real aqui
+        }
+    }
+}
 
-# Função para converter data (InfinitePay e PicPay)
-def converter_data(data_str):
-    try:
-        if not data_str: return None
-        d = str(data_str).split(' •')[0].replace(',', '').strip()
-        if "/" in d: return pd.to_datetime(d, format='%d/%m/%Y', errors='coerce')
-        meses = {'Jan':'01','Fev':'02','Mar':'03','Abr':'04','Mai':'05','Jun':'06','Jul':'07','Ago':'08','Set':'09','Out':'10','Nov':'11','Dez':'12'}
-        for pt, num in meses.items():
-            if pt in d: d = d.replace(pt, num); break
-        return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
-    except: return None
+# Configura o autenticador com COOKIE permanente (30 dias)
+authenticator = stauth.Authenticate(
+    credentials,
+    "mj_liquida_dashboard", # Nome do cookie salvo no navegador
+    "mj_secret_key_123",    # Chave para criptografar o cookie
+    cookie_expiry_days=30
+)
 
-# --- LOGIN ---
-if 'perfil' not in st.session_state: st.session_state.perfil = None
-if st.session_state.perfil is None:
-    st.title("🔑 Portal MJ Soluções - Login")
-    u = st.text_input("Usuário").upper().strip()
-    p = st.text_input("Senha", type="password")
-    if st.button("Entrar"):
-        if u == "ADMIN" and p == "mj123":
-            st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"
-            st.rerun()
-        elif u in ["MJ INFINITE CASH D", "VP INFINITE CASH D", "MJ PICPAY CASH D"] and p == "12345":
-            st.session_state.perfil = "cliente"; st.session_state.usuario = u
-            st.rerun()
-        else: st.error("❌ Usuário ou senha incorretos.")
-else:
-    # --- INTERFACE LOGADA ---
-    st.sidebar.title(f"👤 {st.session_state.usuario}")
-    menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Home", "🏦 Seu banco", "🛒 Suas vendas", "🚪 Sair"])
-    if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
+# Renderiza a tela de login
+name, authentication_status, username = authenticator.login('Painel MJ - Login', 'main')
 
-    try:
-        # 1. Busca dados
-        df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+# --- 3. LOGICA DO DASHBOARD ---
+if authentication_status:
+    # Sidebar - Botão de Sair
+    authenticator.logout('Sair do Sistema', 'sidebar')
+    
+    # AUTO-REFRESH: Atualiza a página inteira a cada 30 segundos
+    # Isso faz com que novas vendas enviadas pelo robô apareçam sozinhas
+    st_autorefresh(interval=30000, key="datarefresh")
+
+    st.title(f"👤 Bem-vindo, {name}")
+    st.header("📊 Painel Geral de Vendas MJ")
+
+    # Função para buscar dados do Supabase
+    @st.cache_data(ttl=10) # Cache de 10 segundos para não sobrecarregar o banco
+    def carregar_vendas():
+        response = supabase.table("vendas").select("*").execute()
+        df = pd.DataFrame(response.data)
         
-        if not df_v.empty:
-            # 2. FILTRO DE SEGURANÇA: Remove qualquer erro de NS da lista de lojistas
-            df_v = df_v[~df_v['lojista'].str.contains("NÃO", na=False)].copy()
-            df_v = df_v[df_v['lojista'] != 'NÃO IDENTIFICADO'].copy()
+        if not df.empty:
+            # Limpeza de dados (removendo os 'nan' que comentamos antes)
+            df = df.dropna(subset=['lojista'])
+            df = df[df['lojista'] != 'nan']
+            
+            # Garantir que valores são numéricos
+            df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce')
+            df['liquido'] = pd.to_numeric(df['liquido'], errors='coerce')
+        return df
 
-            # 3. Tratamento de Datas
-            df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
-            df_v = df_v.dropna(subset=['data_dt'])
+    df_vendas = carregar_vendas()
 
-            # --- FILTROS ADMIN vs CLIENTE ---
-            if st.session_state.perfil == "admin":
-                st.title("👨‍✈️ Painel Geral MJ")
-                # Menu limpo: Só mostra nomes de clientes reais
-                lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
-                escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
-                v_c = df_v[df_v['lojista'].isin(escolha)].copy()
-            else:
-                st.title(f"🏠 Painel: {st.session_state.usuario}")
-                v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
+    if not df_vendas.empty:
+        # --- FILTROS ---
+        st.sidebar.header("Filtros")
+        lojistas = st.sidebar.multiselect("Filtrar Lojistas:", options=df_vendas['lojista'].unique(), default=df_vendas['lojista'].unique())
+        
+        df_filtrado = df_vendas[df_vendas['lojista'].isin(lojistas)]
 
-            # Filtro Data
-            st.sidebar.divider()
-            d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date())
-            d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date())
-            v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
+        # --- MÉTRICAS ---
+        c1, c2, c3, c4 = st.columns(4)
+        total_bruto = df_filtrado['bruto'].sum()
+        total_liq = df_filtrado['liquido'].sum()
+        total_vendas = len(df_filtrado)
+        meu_lucro = total_bruto - total_liq # Exemplo de cálculo
 
-            # --- MÉTRICAS ---
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
-            m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
-            m3.metric("Qtd Vendas", len(v_c))
-            if st.session_state.perfil == "admin":
-                m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
+        c1.metric("Bruto Total", f"R$ {total_bruto:,.2f}")
+        c2.metric("Líquido Esperado", f"R$ {total_liq:,.2f}")
+        c3.metric("Qtd Vendas", total_vendas)
+        c4.metric("Seu Lucro (R$)", f"R$ {meu_lucro:,.2f}", delta_color="normal")
 
-            st.write("---")
-            # Exibe Tabela formatada
-            exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
-            exibir['taxa_cliente'] = (exibir['taxa_cliente'] * 100).map('{:.2f}%'.format)
-            st.dataframe(exibir, use_container_width=True)
+        st.divider()
 
-        else: st.info("Aguardando sincronização...")
+        # --- TABELA DE DADOS ---
+        st.subheader("📋 Detalhamento das Transações")
+        # Formatação para exibição
+        df_display = df_filtrado.copy()
+        st.dataframe(df_display, use_container_width=True)
 
-    except Exception as e: st.error(f"Erro no sistema: {e}")
+    else:
+        st.info("Nenhuma venda encontrada no banco de dados até o momento.")
+
+elif authentication_status == False:
+    st.error('Usuário ou senha incorretos.')
+elif authentication_status == None:
+    st.warning('Por favor, insira seu usuário e senha para acessar o painel.')
+
+# --- RODAPÉ ---
+st.caption("Sistema MJ Soluções - Atualização automática ativa (30s)")
