@@ -2,13 +2,13 @@ import streamlit as st
 import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime
-from streamlit_autorefresh import st_autorefresh # Adicionado
+from streamlit_autorefresh import st_autorefresh
 
 # Configuração visual profissional
 st.set_page_config(page_title="Portal MJ Soluções", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO ---
-# Certifique-se de que st.secrets está configurado no Streamlit Cloud
+# Certifique-se de que os segredos estão configurados no Streamlit Cloud
 SUPABASE_URL = st.secrets["supabase"]["url"]
 SUPABASE_KEY = st.secrets["supabase"]["key"]
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
@@ -43,10 +43,21 @@ if st.session_state.perfil is None:
 else:
     # --- INTERFACE LOGADA ---
     
-    # ATUALIZAÇÃO AUTOMÁTICA (A cada 30 segundos o portal busca vendas novas sem deslogar)
+    # 🔄 ATUALIZAÇÃO AUTOMÁTICA (A cada 30 segundos)
     st_autorefresh(interval=30000, key="datarefresh")
 
+    # Barra Lateral
     st.sidebar.title(f"👤 {st.session_state.usuario}")
+    
+    # 🕒 RELÓGIO DE SINCRONIZAÇÃO (Para você saber que está atualizando)
+    st.sidebar.markdown(f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; border-left: 5px solid #2ecc71;">
+            <small>🔄 <b>Sincronizado às:</b> {datetime.now().strftime('%H:%M:%S')}</small><br>
+            <small>Próxima atualização em 30s</small>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    st.sidebar.divider()
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Home", "🏦 Seu banco", "🛒 Suas vendas", "🚪 Sair"])
     
     if menu == "🚪 Sair": 
@@ -54,12 +65,13 @@ else:
         st.rerun()
 
     try:
-        # 1. Busca dados da VIEW dashboard_vendas
-        # Nota: Usamos a view para garantir que os cálculos de spread já venham prontos
+        # 1. Busca dados da tabela/view
         df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
         
         if not df_v.empty:
-            # 2. FILTRO DE SEGURANÇA
+            # 2. FILTRO DE SEGURANÇA E LIMPEZA (Remove nan e nomes inválidos)
+            df_v = df_v.dropna(subset=['lojista'])
+            df_v = df_v[df_v['lojista'].astype(str).str.lower() != 'nan'].copy()
             df_v = df_v[~df_v['lojista'].str.contains("NÃO", na=False)].copy()
             df_v = df_v[df_v['lojista'] != 'NÃO IDENTIFICADO'].copy()
 
@@ -77,7 +89,7 @@ else:
                 st.title(f"🏠 Painel: {st.session_state.usuario}")
                 v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
 
-            # Filtro Data
+            # Filtro de Data na Sidebar
             st.sidebar.divider()
             d_min = v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date()
             d_max = v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date()
@@ -96,18 +108,19 @@ else:
                 m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
 
             st.write("---")
-            # Exibe Tabela formatada
+            
+            # --- TABELA DE VENDAS ---
+            st.subheader("📋 Relatório de Transações")
             exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
-            # Formata a taxa para aparecer com %
+            # Formata taxa para %
             exibir['taxa_cliente'] = (pd.to_numeric(exibir['taxa_cliente'], errors='coerce') * 100).map('{:.2f}%'.format)
             
-            st.subheader("📋 Relatório de Transações")
             st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
 
         else: 
-            st.info("Aguardando sincronização dos robôs...")
+            st.info("Aguardando novas sincronizações dos robôs...")
 
     except Exception as e: 
-        st.error(f"Erro no carregamento dos dados: {e}")
+        st.error(f"Erro no carregamento: {e}")
 
-st.sidebar.caption("Sincronização automática ativa (30s)")
+    st.sidebar.caption("Sincronização em tempo real ativa")
