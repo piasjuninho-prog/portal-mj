@@ -1,66 +1,91 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
-import streamlit_authenticator as stauth
+from streamlit_autorefresh import st_autorefresh
 
 # 1. Configuração da Página
-st.set_page_config(page_title="Painel MJ", layout="centered")
+st.set_page_config(page_title="Painel MJ Soluções", layout="wide")
 
-# 2. Dados de Login
-# Senha: admin123
-credentials = {
-    "usernames": {
-        "admin": {
-            "name": "Marivaldo Júnior",
-            "password": "$2b$12$LO9.6oK7C/M6vO8U0zO/aeA7S9V8K/6/7P/9.Z2GqO8m8Rk8v0v."
-        }
-    }
-}
+# 2. Configurações do Supabase (COLE SUA KEY REAL AQUI)
+URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
+KEY_SB = "SUA_KEY_ANON_OU_PUBLIC_AQUI" 
 
-# 3. Inicialização do Autenticador (Usando argumentos nomeados para evitar erros)
-authenticator = stauth.Authenticate(
-    credentials=credentials,
-    cookie_name="mj_dashboard_v8",
-    key="mj_secret_v8",
-    cookie_expiry_days=30
-)
+# Inicializa o banco de dados
+@st.cache_resource
+def conectar_banco():
+    return create_client(URL_SB, KEY_SB)
 
-# 4. Renderiza o formulário de login
-# O formulário agora só será renderizado se ninguém estiver logado
-if not st.session_state.get("authentication_status"):
-    st.title("🔒 Acesso Restrito")
-    authenticator.login()
+# 3. Gerenciamento de Login Simples (Não trava)
+if "logado" not in st.session_state:
+    st.session_state.logado = False
 
-# 5. Lógica da Área Logada
-if st.session_state.get("authentication_status"):
-    # Se chegou aqui, o login deu certo!
-    st.sidebar.title(f"Bem-vindo, {st.session_state['name']}")
-    authenticator.logout('Sair', 'sidebar')
+if not st.session_state.logado:
+    # --- TELA DE LOGIN ---
+    st.markdown("<h1 style='text-align: center;'>🔒 Acesso Restrito</h1>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        with st.form("login_form"):
+            usuario = st.text_input("Usuário")
+            senha = st.text_input("Senha", type="password")
+            btn_entrar = st.form_submit_button("Entrar no Painel")
+            
+            if btn_entrar:
+                if usuario == "admin" and senha == "admin123":
+                    st.session_state.logado = True
+                    st.rerun() # Reinicia para mostrar o painel
+                else:
+                    st.error("Usuário ou senha incorretos")
+    st.info("Utilize admin / admin123")
 
-    st.title("📊 Painel Geral MJ")
-    st.success("Logado com sucesso!")
+else:
+    # --- ÁREA LOGADA (DASHBOARD) ---
+    
+    # Botão de Sair no topo da lateral
+    if st.sidebar.button("🚪 Sair do Sistema"):
+        st.session_state.logado = False
+        st.rerun()
 
-    # --- SÓ AGORA CONECTA NO SUPABASE ---
-    URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
-    # COLOQUE SUA KEY REAL ABAIXO
-    KEY_SB = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" 
+    # Atualização Automática a cada 30 segundos
+    st_autorefresh(interval=30000, key="datarefresh")
 
-    try:
-        supabase = create_client(URL_SB, KEY_SB)
-        res = supabase.table("vendas").select("*").order("id", desc=True).execute()
-        df = pd.DataFrame(res.data)
+    st.title("📊 Dashboard Geral MJ")
+    st.write("Sincronização em tempo real ativa.")
+
+    def carregar_vendas():
+        try:
+            sb = conectar_banco()
+            # Busca as vendas ordenando pelas mais recentes
+            res = sb.table("vendas").select("*").order("id", desc=True).execute()
+            df = pd.DataFrame(res.data)
+            
+            if not df.empty:
+                # Limpa dados 'nan'
+                df = df.dropna(subset=['lojista'])
+                df = df[df['lojista'].str.lower() != 'nan']
+                # Converte para números
+                df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce')
+            return df
+        except Exception as e:
+            st.error(f"Erro de conexão: {e}")
+            return pd.DataFrame()
+
+    df_vendas = carregar_vendas()
+
+    if not df_vendas.empty:
+        # MÉTRICAS
+        total_bruto = df_vendas['bruto'].sum()
+        total_vendas = len(df_vendas)
         
-        if not df.empty:
-            df = df[df['lojista'].notna() & (df['lojista'].str.lower() != 'nan')]
-            st.metric("Total de Vendas", len(df))
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("Nenhuma venda encontrada no banco.")
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}")
+        m2.metric("Qtd de Vendas", total_vendas)
+        m3.success("Robôs Ativos")
 
-elif st.session_state.get("authentication_status") is False:
-    st.error('Usuário ou senha incorretos.')
+        st.divider()
 
-elif st.session_state.get("authentication_status") is None:
-    st.info('Utilize admin / admin123')
+        # TABELA
+        st.subheader("📋 Relatório de Transações (Tempo Real)")
+        st.dataframe(df_vendas, use_container_width=True)
+    else:
+        st.info("O banco de dados está vazio. Ligue os robôs na InfinitePay e PicPay!")
