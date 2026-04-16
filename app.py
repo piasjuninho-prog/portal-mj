@@ -4,11 +4,10 @@ from supabase import create_client, Client
 import streamlit_authenticator as stauth
 from streamlit_autorefresh import st_autorefresh
 
-# 1. Configuração de Página (Deve ser a primeira linha)
-st.set_page_config(page_title="Painel MJ", layout="wide")
+# 1. Configuração da Página (Primeira linha sempre)
+st.set_page_config(page_title="Painel MJ Soluções", layout="wide")
 
 # 2. Definição das Credenciais (Senha: admin123)
-# O Hash abaixo é o código secreto para 'admin123'
 credentials = {
     "usernames": {
         "admin": {
@@ -18,77 +17,73 @@ credentials = {
     }
 }
 
-# 3. Inicializa o Autenticador (Versão ultra-estável)
+# 3. Inicializa o Autenticador
+# Removi parâmetros extras que causam erro em versões novas
 authenticator = stauth.Authenticate(
     credentials,
-    "mj_liquida_v6",     # Nome do cookie
-    "mj_random_key_v6",   # Chave secreta
-    cookie_expiry_days=30
+    "mj_liquida_v7",    # Nome do cookie
+    "mj_secret_v7",     # Chave do cookie
+    30                  # Dias de validade
 )
 
-# 4. Renderiza o Login (Apenas UMA vez para não dar erro de duplicidade)
-# Se der erro de senha, use 'admin' e 'admin123'
-name, authentication_status, username = authenticator.login(location='main')
+# 4. Renderiza o Login
+# Na versão nova, não passamos 'location'. Ele renderiza onde o código for chamado.
+authenticator.login()
 
-# 5. Lógica do Dashboard
-if st.session_state["authentication_status"]:
-    # BOTÃO DE SAIR
+# 5. Verificação de Status via Session State (Forma mais segura)
+if st.session_state.get("authentication_status"):
+    # --- ÁREA LOGADA ---
     authenticator.logout('Sair', 'sidebar')
-    
-    # AUTO-REFRESH (30 SEGUNDOS)
-    st_autorefresh(interval=30000, key="datarefresh_mj")
+    st_autorefresh(interval=30000, key="refresh_mj")
 
-    st.title("🚀 Painel de Vendas MJ")
-    st.write(f"Bem-vindo, **{st.session_state['name']}**")
+    st.title("📊 Painel Geral MJ")
+    st.write(f"Bem-vindo, {st.session_state['name']}")
 
     # --- DADOS DO SUPABASE ---
-    # Substitua com seus dados reais abaixo:
+    # COLOQUE SUA KEY REAL ABAIXO
     URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
     KEY_SB = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" 
 
     @st.cache_resource
-    def init_connection():
+    def init_db():
         return create_client(URL_SB, KEY_SB)
 
-    def load_data():
+    def carregar_vendas():
         try:
-            client = init_connection()
-            res = client.table("vendas").select("*").execute()
-            df_raw = pd.DataFrame(res.data)
-            if not df_raw.empty:
-                # Limpa lojistas vazios ou 'nan'
-                df_raw = df_raw.dropna(subset=['lojista'])
-                df_raw = df_raw[df_raw['lojista'].str.lower() != 'nan']
-                # Converte para números
-                df_raw['bruto'] = pd.to_numeric(df_raw['bruto'], errors='coerce')
-            return df_raw
-        except Exception as e:
-            st.error(f"Erro ao carregar dados do banco: {e}")
+            client = init_db()
+            # Busca as vendas, ordenando pelas mais recentes (id descendente)
+            res = client.table("vendas").select("*").order("id", desc=True).execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                # Limpa dados ruins
+                df = df.dropna(subset=['lojista'])
+                df = df[df['lojista'].str.lower() != 'nan']
+                # Converte bruto para número
+                df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce')
+            return df
+        except:
             return pd.DataFrame()
 
-    df = load_data()
+    df = carregar_vendas()
 
     if not df.empty:
-        # MÉTRICAS RÁPIDAS
+        # Métricas
+        total = df['bruto'].sum()
+        qtd = len(df)
+        
         c1, c2, c3 = st.columns(3)
-        total_bruto = df['bruto'].sum()
-        c1.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}")
-        c2.metric("Total de Vendas", len(df))
-        c3.info("Atualizando em tempo real (30s)")
+        c1.metric("Faturamento Bruto", f"R$ {total:,.2f}")
+        c2.metric("Total de Vendas", qtd)
+        c3.info("Atualização: 30s")
 
         st.divider()
-
-        # TABELA DE DADOS
         st.subheader("📋 Relatório de Transações")
-        st.dataframe(df.sort_values(by='id', ascending=False), use_container_width=True)
+        st.dataframe(df, use_container_width=True)
     else:
-        st.info("Nenhuma venda encontrada no banco. O robô já sincronizou hoje?")
+        st.info("Aguardando os robôs enviarem as primeiras vendas...")
 
-elif st.session_state["authentication_status"] is False:
+elif st.session_state.get("authentication_status") is False:
     st.error('Usuário ou senha incorretos.')
 
-elif st.session_state["authentication_status"] is None:
-    st.warning('Por favor, insira o usuário e senha.')
-
-# Rodapé simples
-st.caption("Desenvolvido para MJ Soluções Comercial")
+elif st.session_state.get("authentication_status") is None:
+    st.info('Por favor, insira admin / admin123 para entrar.')
