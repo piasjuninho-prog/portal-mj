@@ -1,132 +1,92 @@
 import streamlit as st
 import pandas as pd
-from supabase import create_client, Client
-from streamlit_autorefresh import st_autorefresh
+from st_supabase_connection import SupabaseConnection
+from datetime import datetime
 
-# 1. Configuração da Página
-st.set_page_config(page_title="Painel Geral MJ", layout="wide", page_icon="📊")
+# Configuração visual profissional
+st.set_page_config(page_title="Portal MJ Soluções", layout="wide", initial_sidebar_state="expanded")
 
-# 2. Gerenciamento de Login
-if "logado" not in st.session_state:
-    st.session_state.logado = False
+# --- CONEXÃO ---
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
+conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# --- TELA DE LOGIN ---
-if not st.session_state.logado:
-    st.markdown("<h1 style='text-align: center;'>🔐 Acesso Administrativo</h1>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,1.5,1])
-    with col2:
-        usuario = st.text_input("Usuário", key="user")
-        senha = st.text_input("Senha", type="password", key="pass")
-        if st.button("ACESSAR PAINEL", use_container_width=True):
-            if usuario == "admin" and senha == "admin123":
-                st.session_state.logado = True
-                st.rerun()
-            else:
-                st.error("Usuário ou senha incorretos")
+# Função para converter data (InfinitePay e PicPay)
+def converter_data(data_str):
+    try:
+        if not data_str: return None
+        d = str(data_str).split(' •')[0].replace(',', '').strip()
+        if "/" in d: return pd.to_datetime(d, format='%d/%m/%Y', errors='coerce')
+        meses = {'Jan':'01','Fev':'02','Mar':'03','Abr':'04','Mai':'05','Jun':'06','Jul':'07','Ago':'08','Set':'09','Out':'10','Nov':'11','Dez':'12'}
+        for pt, num in meses.items():
+            if pt in d: d = d.replace(pt, num); break
+        return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
+    except: return None
 
-# --- ÁREA DO DASHBOARD ---
+# --- LOGIN ---
+if 'perfil' not in st.session_state: st.session_state.perfil = None
+if st.session_state.perfil is None:
+    st.title("🔑 Portal MJ Soluções - Login")
+    u = st.text_input("Usuário").upper().strip()
+    p = st.text_input("Senha", type="password")
+    if st.button("Entrar"):
+        if u == "ADMIN" and p == "mj123":
+            st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"
+            st.rerun()
+        elif u in ["MJ INFINITE CASH D", "VP INFINITE CASH D", "MJ PICPAY CASH D"] and p == "12345":
+            st.session_state.perfil = "cliente"; st.session_state.usuario = u
+            st.rerun()
+        else: st.error("❌ Usuário ou senha incorretos.")
 else:
-    st_autorefresh(interval=30000, key="datarefresh")
+    # --- INTERFACE LOGADA ---
+    st.sidebar.title(f"👤 {st.session_state.usuario}")
+    menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Home", "🏦 Seu banco", "🛒 Suas vendas", "🚪 Sair"])
+    if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    st.sidebar.title("MENU MJ")
-    if st.sidebar.button("🚪 Sair do Sistema"):
-        st.session_state.logado = False
-        st.rerun()
-
-    # --- CONFIGURAÇÃO SUPABASE ---
-    URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
-    KEY_SB = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" # COLOQUE SUA KEY REAL AQUI
-
-    @st.cache_resource
-    def conectar():
-        return create_client(URL_SB, KEY_SB)
-
-    def carregar_e_processar_dados():
-        try:
-            sb = conectar()
-            # 1. Puxa as vendas
-            res_vendas = sb.table("vendas").select("*").execute()
-            df_v = pd.DataFrame(res_vendas.data)
-            
-            # 2. Puxa as taxas que você me mostrou no print
-            res_taxas = sb.table("taxas_clientes").select("*").execute()
-            df_t = pd.DataFrame(res_taxas.data)
-
-            if df_v.empty:
-                return pd.DataFrame()
-
-            # Limpeza básica de espaços e letras maiúsculas para o cruzamento não falhar
-            for df in [df_v, df_t]:
-                for col in ['ns', 'bandeira']:
-                    if col in df.columns:
-                        df[col] = df[col].astype(str).str.strip().str.lower()
-            
-            # No df_v a coluna chama 'plano', no df_t chama 'meio'
-            df_v['plano'] = df_v['plano'].astype(str).str.strip().str.lower()
-            df_t['meio'] = df_t['meio'].astype(str).str.strip().str.lower()
-
-            # --- O CASAMENTO (MERGE) ---
-            # Cruzamos a venda com a taxa baseada em NS + BANDEIRA + PLANO
-            df_final = pd.merge(
-                df_v, 
-                df_t[['ns', 'bandeira', 'meio', 'taxa_decimal', 'cliente']], 
-                left_on=['ns', 'bandeira', 'plano'], 
-                right_on=['ns', 'bandeira', 'meio'], 
-                how='left'
-            )
-
-            # 3. Cálculos Financeiros
-            df_final['bruto'] = pd.to_numeric(df_final['bruto'], errors='coerce').fillna(0)
-            df_final['taxa_decimal'] = pd.to_numeric(df_final['taxa_decimal'], errors='coerce').fillna(0)
-            
-            # Líquido do Cliente
-            df_final['liquido_esperado'] = df_final['bruto'] * (1 - df_final['taxa_decimal'])
-            
-            # Seu Lucro (Spread) 
-            # Como não temos a tabela de custo custo aqui ainda, vou calcular 
-            # o spread como a taxa total por enquanto (ou você pode subtrair o custo se souber)
-            df_final['seu_lucro'] = df_final['bruto'] * df_final['taxa_decimal'] 
-
-            # Substitui o nome do lojista pelo nome oficial da tabela de taxas (se encontrar)
-            df_final['lojista'] = df_final['cliente'].fillna(df_final['lojista'])
-            
-            return df_final
-        except Exception as e:
-            st.error(f"Erro no processamento: {e}")
-            return pd.DataFrame()
-
-    df_completo = carregar_e_processar_dados()
-
-    st.title("📊 Dashboard MJ Soluções")
-
-    if not df_completo.empty:
-        # Filtros na Sidebar
-        st.sidebar.divider()
-        lista_lojistas = sorted([x for x in df_completo['lojista'].unique() if str(x) != 'nan'])
-        selecionados = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lojistas, default=lista_lojistas)
+    try:
+        # 1. Busca dados
+        df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
         
-        df_filtrado = df_completo[df_completo['lojista'].isin(selecionados)]
+        if not df_v.empty:
+            # 2. FILTRO DE SEGURANÇA: Remove qualquer erro de NS da lista de lojistas
+            df_v = df_v[~df_v['lojista'].str.contains("NÃO", na=False)].copy()
+            df_v = df_v[df_v['lojista'] != 'NÃO IDENTIFICADO'].copy()
 
-        # --- MÉTRICAS ---
-        c1, c2, c3, c4 = st.columns(4)
-        total_bruto = df_filtrado['bruto'].sum()
-        total_liq = df_filtrado['liquido_esperado'].sum()
-        total_vendas = len(df_filtrado)
-        total_lucro = df_filtrado['seu_lucro'].sum()
+            # 3. Tratamento de Datas
+            df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
+            df_v = df_v.dropna(subset=['data_dt'])
 
-        c1.metric("Bruto Total", f"R$ {total_bruto:,.2f}")
-        c2.metric("Líquido Esperado", f"R$ {total_liq:,.2f}")
-        c3.metric("Qtd Vendas", total_vendas)
-        c4.metric("Seu Lucro (Spread)", f"R$ {total_lucro:,.2f}")
+            # --- FILTROS ADMIN vs CLIENTE ---
+            if st.session_state.perfil == "admin":
+                st.title("👨‍✈️ Painel Geral MJ")
+                # Menu limpo: Só mostra nomes de clientes reais
+                lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
+                escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
+                v_c = df_v[df_v['lojista'].isin(escolha)].copy()
+            else:
+                st.title(f"🏠 Painel: {st.session_state.usuario}")
+                v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
 
-        st.divider()
+            # Filtro Data
+            st.sidebar.divider()
+            d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date())
+            d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date())
+            v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
 
-        # --- TABELA ---
-        st.subheader("📋 Relatório de Transações")
-        # Seleciona apenas as colunas principais para não ficar gigante
-        cols_mostrar = ['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'liquido_esperado', 'taxa_decimal']
-        st.dataframe(df_filtrado[cols_mostrar].sort_index(ascending=False), use_container_width=True)
-    else:
-        st.info("Aguardando vendas...")
+            # --- MÉTRICAS ---
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
+            m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
+            m3.metric("Qtd Vendas", len(v_c))
+            if st.session_state.perfil == "admin":
+                m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
 
-    st.caption("Atualização automática ativa (30s)")
+            st.write("---")
+            # Exibe Tabela formatada
+            exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
+            exibir['taxa_cliente'] = (exibir['taxa_cliente'] * 100).map('{:.2f}%'.format)
+            st.dataframe(exibir, use_container_width=True)
+
+        else: st.info("Aguardando sincronização...")
+
+    except Exception as e: st.error(f"Erro no sistema: {e}")
