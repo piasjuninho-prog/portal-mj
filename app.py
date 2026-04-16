@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 import streamlit_authenticator as stauth
-from streamlit_autorefresh import st_autorefresh
 
-# 1. Configuração da Página (Primeira linha sempre)
-st.set_page_config(page_title="Painel MJ Soluções", layout="wide")
+# 1. Configuração da Página
+st.set_page_config(page_title="Painel MJ", layout="centered")
 
-# 2. Definição das Credenciais (Senha: admin123)
+# 2. Dados de Login
+# Senha: admin123
 credentials = {
     "usernames": {
         "admin": {
@@ -17,73 +17,50 @@ credentials = {
     }
 }
 
-# 3. Inicializa o Autenticador
-# Removi parâmetros extras que causam erro em versões novas
+# 3. Inicialização do Autenticador (Usando argumentos nomeados para evitar erros)
 authenticator = stauth.Authenticate(
-    credentials,
-    "mj_liquida_v7",    # Nome do cookie
-    "mj_secret_v7",     # Chave do cookie
-    30                  # Dias de validade
+    credentials=credentials,
+    cookie_name="mj_dashboard_v8",
+    key="mj_secret_v8",
+    cookie_expiry_days=30
 )
 
-# 4. Renderiza o Login
-# Na versão nova, não passamos 'location'. Ele renderiza onde o código for chamado.
-authenticator.login()
+# 4. Renderiza o formulário de login
+# O formulário agora só será renderizado se ninguém estiver logado
+if not st.session_state.get("authentication_status"):
+    st.title("🔒 Acesso Restrito")
+    authenticator.login()
 
-# 5. Verificação de Status via Session State (Forma mais segura)
+# 5. Lógica da Área Logada
 if st.session_state.get("authentication_status"):
-    # --- ÁREA LOGADA ---
+    # Se chegou aqui, o login deu certo!
+    st.sidebar.title(f"Bem-vindo, {st.session_state['name']}")
     authenticator.logout('Sair', 'sidebar')
-    st_autorefresh(interval=30000, key="refresh_mj")
 
     st.title("📊 Painel Geral MJ")
-    st.write(f"Bem-vindo, {st.session_state['name']}")
+    st.success("Logado com sucesso!")
 
-    # --- DADOS DO SUPABASE ---
-    # COLOQUE SUA KEY REAL ABAIXO
+    # --- SÓ AGORA CONECTA NO SUPABASE ---
     URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
+    # COLOQUE SUA KEY REAL ABAIXO
     KEY_SB = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" 
 
-    @st.cache_resource
-    def init_db():
-        return create_client(URL_SB, KEY_SB)
-
-    def carregar_vendas():
-        try:
-            client = init_db()
-            # Busca as vendas, ordenando pelas mais recentes (id descendente)
-            res = client.table("vendas").select("*").order("id", desc=True).execute()
-            df = pd.DataFrame(res.data)
-            if not df.empty:
-                # Limpa dados ruins
-                df = df.dropna(subset=['lojista'])
-                df = df[df['lojista'].str.lower() != 'nan']
-                # Converte bruto para número
-                df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce')
-            return df
-        except:
-            return pd.DataFrame()
-
-    df = carregar_vendas()
-
-    if not df.empty:
-        # Métricas
-        total = df['bruto'].sum()
-        qtd = len(df)
+    try:
+        supabase = create_client(URL_SB, KEY_SB)
+        res = supabase.table("vendas").select("*").order("id", desc=True).execute()
+        df = pd.DataFrame(res.data)
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Faturamento Bruto", f"R$ {total:,.2f}")
-        c2.metric("Total de Vendas", qtd)
-        c3.info("Atualização: 30s")
-
-        st.divider()
-        st.subheader("📋 Relatório de Transações")
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Aguardando os robôs enviarem as primeiras vendas...")
+        if not df.empty:
+            df = df[df['lojista'].notna() & (df['lojista'].str.lower() != 'nan')]
+            st.metric("Total de Vendas", len(df))
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Nenhuma venda encontrada no banco.")
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {e}")
 
 elif st.session_state.get("authentication_status") is False:
     st.error('Usuário ou senha incorretos.')
 
 elif st.session_state.get("authentication_status") is None:
-    st.info('Por favor, insira admin / admin123 para entrar.')
+    st.info('Utilize admin / admin123')
