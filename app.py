@@ -4,94 +4,89 @@ from supabase import create_client, Client
 import streamlit_authenticator as stauth
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURAÇÕES DO SUPABASE ---
-# Lembre-se de colocar sua chave real aqui
-SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# --- 1. CONFIGURAÇÕES INICIAIS DA PÁGINA ---
+st.set_page_config(page_title="Painel MJ", page_icon="🚀", layout="wide")
 
-# --- 2. CONFIGURAÇÃO DE LOGIN ---
-# Senha definida: admin123
-# O código abaixo é o Hash exato para 'admin123' na versão atual.
-config = {
-    "credentials": {
-        "usernames": {
-            "admin": {
-                "name": "Marivaldo Júnior",
-                "password": "$2b$12$LO9.6oK7C/M6vO8U0zO/aeA7S9V8K/6/7P/9.Z2GqO8m8Rk8v0v."
-            }
+# --- 2. DADOS DE CONEXÃO (VERIFIQUE SE ESTÃO CORRETOS!) ---
+# IMPORTANTE: Se as chaves abaixo estiverem como "SUA_KEY...", o site vai travar!
+URL_SB = "https://oiuyklgtcazbtuvwmelv.supabase.co"
+KEY_SB = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc" 
+
+# Inicializa o banco de dados de forma segura
+@st.cache_resource
+def get_supabase():
+    return create_client(URL_SB, KEY_SB)
+
+# --- 3. CONFIGURAÇÃO DE LOGIN ---
+# Senha: admin123
+credentials = {
+    "usernames": {
+        "admin": {
+            "name": "Marivaldo Júnior",
+            "password": "$2b$12$LO9.6oK7C/M6vO8U0zO/aeA7S9V8K/6/7P/9.Z2GqO8m8Rk8v0v."
         }
-    },
-    "cookie": {
-        "expiry_days": 30,
-        "key": "mj_secret_key_v4",
-        "name": "mj_liquida_cookie_v4"
     }
 }
 
-# Inicializa o autenticador
 authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
+    credentials,
+    "mj_session_cookie",
+    "mj_random_key_99",
+    cookie_expiry_days=30
 )
 
-# Renderiza a tela de login (Versão simplificada sem erros de localização)
+# Renderiza o formulário de login
+# Se a tela continuar cinza, mude para: authenticator.login(location='main')
 authenticator.login()
 
-# --- 3. VERIFICAÇÃO DE STATUS ---
+# --- 4. ÁREA LOGADA ---
 if st.session_state["authentication_status"]:
-    # Botão de sair na barra lateral
+    # Sidebar
+    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
+    st.sidebar.title(f"Olá, {st.session_state['name']}")
     authenticator.logout('Sair do Sistema', 'sidebar')
     
-    # ATUALIZAÇÃO AUTOMÁTICA (A cada 30 segundos)
-    st_autorefresh(interval=30000, key="data_refresh_mj")
+    # ATUALIZAÇÃO AUTOMÁTICA (30s)
+    st_autorefresh(interval=30000, key="f5_data")
 
-    st.title(f"🚀 Painel Geral MJ")
-    st.write(f"Bem-vindo, **{st.session_state['name']}**")
+    st.title("📊 Dashboard MJ Soluções")
+    st.markdown("---")
 
     # Função para carregar dados do Supabase
-    def carregar_vendas():
+    def carregar_dados():
         try:
-            response = supabase.table("vendas").select("*").execute()
+            sb = get_supabase()
+            response = sb.table("vendas").select("*").execute()
             df = pd.DataFrame(response.data)
             if not df.empty:
-                # Limpa lojistas vazios ou erro 'nan'
-                df = df.dropna(subset=['lojista'])
-                df = df[df['lojista'] != 'nan']
-                # Converte valores para numérico para cálculos
+                df = df[df['lojista'].notna() & (df['lojista'] != 'nan')]
                 df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce')
                 df['liquido'] = pd.to_numeric(df['liquido'], errors='coerce')
-            return df
-        except Exception as e:
-            st.error(f"Erro ao conectar ao banco de dados: {e}")
+                return df
+            return pd.DataFrame()
+        except:
             return pd.DataFrame()
 
-    df_vendas = carregar_vendas()
+    df = carregar_dados()
 
-    if not df_vendas.empty:
-        # MÉTRICAS NO TOPO
-        total_bruto = df_vendas['bruto'].sum()
-        total_vendas = len(df_vendas)
+    if not df.empty:
+        # MÉTRICAS EXECUTIVAS
+        bruto_total = df['bruto'].sum()
+        qtd = len(df)
         
-        # Layout de colunas para métricas
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Bruto Total", f"R$ {total_bruto:,.2f}")
-        m2.metric("Qtd Vendas", total_vendas)
-        m3.info("Atualização Automática Ativa (30s)")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Faturamento Bruto", f"R$ {bruto_total:,.2f}")
+        col2.metric("Total de Vendas", qtd)
+        col3.success("Sincronização Ativa")
 
-        st.divider()
-
-        # TABELA DE DADOS
-        st.subheader("📋 Últimas Vendas Sincronizadas")
-        # Mostra a tabela invertida (vendas mais recentes primeiro)
-        st.dataframe(df_vendas.sort_values(by='id', ascending=False), use_container_width=True)
-
+        st.subheader("📋 Relatório de Vendas Recentes")
+        # Exibe as 50 últimas vendas
+        st.table(df.sort_values(by='id', ascending=False).head(50))
     else:
-        st.info("O banco de dados está vazio. Aguardando sincronização dos robôs...")
+        st.info("Aguardando dados dos robôs...")
 
 elif st.session_state["authentication_status"] is False:
     st.error('Usuário ou senha incorretos.')
+    
 elif st.session_state["authentication_status"] is None:
-    st.warning('Por favor, faça o login para acessar o painel.')
+    st.info('Por favor, insira suas credenciais para acessar o painel administrativo.')
