@@ -29,39 +29,38 @@ def converter_data(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-# --- FUNÇÃO DO PDF CORRIGIDA (LIMPEZA DE CARACTERES ESPECIAIS) ---
+# --- FUNÇÃO DO PDF CORRIGIDA (SEM ERRO DE ENCODE) ---
 def gerar_pdf(df, total_bruto, lucro):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
+    pdf.set_font("helvetica", "B", 16)
     pdf.cell(190, 10, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
     pdf.ln(10)
-    pdf.set_font("Arial", "", 12)
+    
+    pdf.set_font("helvetica", "", 12)
     pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1)
     pdf.cell(95, 10, f"Lucro Real: R$ {lucro:,.2f}", 1, ln=True)
     pdf.ln(5)
     
-    # Cabeçalho da Tabela
-    pdf.set_font("Arial", "B", 10)
+    pdf.set_font("helvetica", "B", 10)
     pdf.cell(35, 8, "Data", 1); pdf.cell(60, 8, "Lojista", 1); pdf.cell(30, 8, "Bandeira", 1); pdf.cell(30, 8, "Bruto", 1); pdf.cell(35, 8, "Liquido", 1, ln=True)
     
-    # Dados da Tabela
-    pdf.set_font("Arial", "", 8)
+    pdf.set_font("helvetica", "", 8)
     for _, r in df.head(100).iterrows():
-        # LIMPEZA: Remove o ponto especial '•' e garante que o texto seja compatível com PDF
-        data_limpa = str(r['data_venda']).replace('•', '-').encode('latin-1', 'replace').decode('latin-1')
-        lojista_limpo = str(r['lojista']).encode('latin-1', 'replace').decode('latin-1')
-        bandeira_limpa = str(r['bandeira']).encode('latin-1', 'replace').decode('latin-1')
+        # Limpeza de caracteres especiais para evitar erro no PDF
+        data_v = str(r['data_venda']).replace('•', '-').encode('latin-1', 'replace').decode('latin-1')
+        nome_l = str(r['lojista']).encode('latin-1', 'replace').decode('latin-1')
+        band_v = str(r['bandeira']).encode('latin-1', 'replace').decode('latin-1')
         
-        pdf.cell(35, 8, data_limpa, 1)
-        pdf.cell(60, 8, lojista_limpo[:30], 1)
-        pdf.cell(30, 8, bandeira_limpa, 1)
+        pdf.cell(35, 8, data_v, 1)
+        pdf.cell(60, 8, nome_l[:30], 1)
+        pdf.cell(30, 8, band_v, 1)
         pdf.cell(30, 8, f"{r['bruto']:,.2f}", 1)
         pdf.cell(35, 8, f"{r['liquido_cliente']:,.2f}", 1, ln=True)
         
-    return pdf.output(dest='S').encode('latin-1')
+    return pdf.output() # Retorna os bytes diretamente
 
-# --- 2. LOGIN ---
+# --- LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG PRO")
@@ -92,8 +91,9 @@ else:
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
         with tab_cad:
             with st.form("cad_est", clear_on_submit=True):
-                nome_f = st.text_input("Nome Fantasia")
-                email_cli = st.text_input("E-mail de Login")
+                c1, c2 = st.columns(2)
+                nome_f = c1.text_input("Nome Fantasia")
+                email_cli = c2.text_input("E-mail de Login")
                 adq = st.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone"])
                 if st.form_submit_button("💾 Salvar"):
                     conn.table("estabelecimentos").insert({"nome_fantasia": nome_f.upper().strip(), "email": email_cli.lower().strip(), "adquirente": adq, "senha": "12345"}).execute()
@@ -156,8 +156,8 @@ else:
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
-            res_oficial = conn.table("estabelecimentos").select("nome_fantasia").execute()
-            lista_oficial = [str(e['nome_fantasia']) for e in res_oficial.data]
+            res_of = conn.table("estabelecimentos").select("nome_fantasia").execute()
+            lista_oficial = [str(e['nome_fantasia']) for e in res_of.data]
             df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             
             if not df.empty:
@@ -199,10 +199,15 @@ else:
                     with g1: st.subheader("📈 Faturamento Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
                     with g2: st.subheader("💳 Vendas por Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
 
-                    # BOTÃO PDF CORRIGIDO
+                    # BOTÃO PDF CORRIGIDO (Bytearray agora é aceito)
                     if st.button("📄 Gerar Relatório PDF"):
-                        pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
-                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio_mj.pdf", "application/pdf")
+                        pdf_data = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
+                        st.download_button(
+                            label="📥 Baixar PDF",
+                            data=pdf_data,
+                            file_name=f"relatorio_{datetime.now().strftime('%d_%m_%H%M')}.pdf",
+                            mime="application/pdf"
+                        )
 
                     st.write("---")
                     st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
@@ -210,4 +215,4 @@ else:
             else: st.info("Sem dados sincronizados.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v34.0")
+st.sidebar.caption("MJ Soluções Comercial v35.0")
