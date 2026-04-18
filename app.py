@@ -7,11 +7,11 @@ from streamlit_autorefresh import st_autorefresh
 # Configuração visual profissional
 st.set_page_config(page_title="Portal MJ PAG", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. CONEXÃO ---
+# --- 1. CONEXÃO DIRETA (CORRIGIDO) ---
 SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 
-conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
+conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
 # Função para converter data
 def converter_data(data_str):
@@ -29,7 +29,7 @@ def converter_data(data_str):
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 
 if st.session_state.perfil is None:
-    st.title("🔐 Portal MJ PAG - Acesso")
+    st.title("🔐 Acesso Portal MJ PAG")
     u = st.text_input("Usuário").upper().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
@@ -39,54 +39,55 @@ if st.session_state.perfil is None:
         elif p == "12345":
             st.session_state.perfil = "cliente"; st.session_state.usuario = u
             st.rerun()
-        else: st.error("❌ Acesso negado.")
+        else: st.error("❌ Usuário ou senha incorretos.")
 else:
     # --- 3. MENU LATERAL ---
     opcoes_menu = ["🏠 Dashboard", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     
-    # Indicador de Sincronização
+    # Relógio de atualização
     st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;">
         <small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
     
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: CRIAR PLANOS (VISUAL MJ PAG) ---
+    # --- 4. ABA: CRIAR PLANOS (ESTILO MJ PAG) ---
     if menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
         st.title("📑 Criando Novo Plano Comercial")
+        st.write("Defina as taxas do plano. Digite em porcentagem (Ex: 10.19)")
         
-        with st.form("form_novo_plano"):
-            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: Grupo 01 - BASE [D+01]")
+        with st.form("form_novo_plano", clear_on_submit=True):
+            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO VIP 12X")
             st.divider()
             
-            # Colunas para as Bandeiras
             col1, col2 = st.columns(2)
-            
             with col1:
                 st.subheader("🟠 MASTERCARD")
-                m_deb = st.number_input("Débito (%)", key="m_deb", format="%.2f")
-                m_1x = st.number_input("Crédito 1x (%)", key="m_1x", format="%.2f")
-                m_6x = st.number_input("Crédito 6x (%)", key="m_6x", format="%.2f")
-                m_12x = st.number_input("Crédito 12x (%)", key="m_12x", format="%.2f")
+                m_deb = st.number_input("Débito (%)", format="%.2f", key="m1")
+                m_1x = st.number_input("Crédito 1x (%)", format="%.2f", key="m2")
+                m_6x = st.number_input("Crédito 6x (%)", format="%.2f", key="m3")
+                m_12x = st.number_input("Crédito 12x (%)", format="%.2f", key="m4")
 
             with col2:
                 st.subheader("🔵 VISA")
-                v_deb = st.number_input("Débito (%) ", key="v_deb", format="%.2f")
-                v_1x = st.number_input("Crédito 1x (%) ", key="v_1x", format="%.2f")
-                v_6x = st.number_input("Crédito 6x (%) ", key="v_6x", format="%.2f")
-                v_12x = st.number_input("Crédito 12x (%) ", key="v_12x", format="%.2f")
+                v_deb = st.number_input("Débito (%) ", format="%.2f", key="v1")
+                v_1x = st.number_input("Crédito 1x (%) ", format="%.2f", key="v2")
+                v_6x = st.number_input("Crédito 6x (%) ", format="%.2f", key="v3")
+                v_12x = st.number_input("Crédito 12x (%) ", format="%.2f", key="v4")
 
             if st.form_submit_button("🚀 SALVAR PLANO NO BANCO", use_container_width=True):
                 if nome_plano:
-                    # 1. Salva o nome do plano e pega o ID
+                    # 1. Salva o nome do plano
                     res = conn.table("planos_mj").insert({"nome_plano": nome_plano.upper()}).execute()
                     id_plano = res.data[0]['id']
                     
-                    # 2. Monta a lista de taxas (Exemplo simplificado de 4 taxas por bandeira)
+                    # 2. Salva as taxas (converte para decimal)
                     taxas_batch = []
-                    for band, taxas in {"mastercard": [("débito", m_deb), ("à vista", m_1x), ("em 6x", m_6x), ("em 12x", m_12x)], 
-                                        "visa": [("débito", v_deb), ("à vista", v_1x), ("em 6x", v_6x), ("em 12x", v_12x)]}.items():
+                    for band, taxas in {
+                        "mastercard": [("débito", m_deb), ("à vista", m_1x), ("em 6x", m_6x), ("em 12x", m_12x)], 
+                        "visa": [("débito", v_deb), ("à vista", v_1x), ("em 6x", v_6x), ("em 12x", v_12x)]
+                    }.items():
                         for meio, valor in taxas:
                             taxas_batch.append({"id_plano": id_plano, "bandeira": band, "meio": meio, "taxa_decimal": valor/100})
                     
@@ -98,30 +99,30 @@ else:
     elif menu == "👤 Vincular Cliente" and st.session_state.perfil == "admin":
         st.title("👤 Associar Cliente a um Plano")
         
-        # Busca planos existentes
+        # Busca planos cadastrados
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
-        planos = {p['nome_plano']: p['id'] for p in res_p.data}
+        dict_planos = {p['nome_plano']: p['id'] for p in res_p.data}
         
         with st.form("form_vinculo"):
-            nome_cliente = st.text_input("Nome Completo do Cliente")
+            nome_cliente = st.text_input("Nome do Cliente (Igual ao Robô)")
             ns_cliente = st.text_input("NS da Maquininha (PB1F...)")
-            plano_selecionado = st.selectbox("Selecione o Plano de Taxas", options=list(planos.keys()))
+            plano_selecionado = st.selectbox("Selecione o Plano de Taxas", options=list(dict_planos.keys()))
             
             if st.form_submit_button("✅ VINCULAR E CONFIGURAR TAXAS", use_container_width=True):
-                # Busca as taxas do plano escolhido
-                id_p = planos[plano_selecionado]
-                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-                
-                # Copia as taxas para a tabela oficial que o Dashboard e o Robô usam
-                novas_taxas = []
-                for t in res_t.data:
-                    novas_taxas.append({
-                        "cliente": nome_cliente.upper(), "ns": ns_cliente,
-                        "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']
-                    })
-                
-                conn.table("taxas_clientes").insert(novas_taxas).execute()
-                st.success(f"🚀 Cliente {nome_cliente} vinculado ao {plano_selecionado} com sucesso!")
+                if nome_cliente and ns_cliente:
+                    id_p = dict_planos[plano_selecionado]
+                    res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                    
+                    novas_taxas = []
+                    for t in res_t.data:
+                        novas_taxas.append({
+                            "cliente": nome_cliente.upper().strip(), "ns": ns_cliente.strip(),
+                            "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']
+                        })
+                    
+                    conn.table("taxas_clientes").insert(novas_taxas).execute()
+                    st.success(f"🚀 Cliente {nome_cliente} vinculado!")
+                else: st.warning("Preencha Nome e NS.")
 
     # --- 6. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
@@ -130,6 +131,7 @@ else:
             df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             
             if not df_v.empty:
+                # Limpeza
                 df_v = df_v[df_v['lojista'].notna() & (df_v['lojista'].astype(str).str.lower() != 'nan')].copy()
                 df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
                 df_v = df_v.dropna(subset=['data_dt'])
@@ -143,10 +145,10 @@ else:
                     st.title(f"🏠 Painel: {st.session_state.usuario}")
                     v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
 
-                # Filtros
+                # Filtros de data
                 st.sidebar.divider()
-                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date())
-                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date())
+                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date())
+                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date())
                 v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
 
                 # Métricas
@@ -158,9 +160,11 @@ else:
                     m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
 
                 st.write("---")
-                st.subheader("📋 Últimas Transações")
+                st.subheader("📋 Relatório de Transações")
                 exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
                 exibir['taxa_cliente'] = (pd.to_numeric(exibir['taxa_cliente'], errors='coerce') * 100).map('{:.2f}%'.format)
                 st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem vendas hoje.")
+            else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
+
+st.sidebar.caption("MJ Soluções Comercial v6.0")
