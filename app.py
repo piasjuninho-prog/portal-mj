@@ -13,7 +13,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# Listas de ordenação fixa para os planos
+# Listas de ordenação fixa
 ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
@@ -54,10 +54,11 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: ESTABELECIMENTOS ---
+    # --- 4. ABA: ESTABELECIMENTOS (EDITÁVEL) ---
     if menu == "🏫 Estabelecimentos" and st.session_state.perfil == "admin":
         st.title("🏫 Gestão de Estabelecimentos")
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
+        
         with tab_cad:
             with st.form("cad_estabelecimento", clear_on_submit=True):
                 c1, c2 = st.columns(2)
@@ -67,15 +68,48 @@ else:
                 adq = c_adq.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone", "PagSeguro", "Outra"])
                 prov = c_prov.text_input("Provedor", placeholder="Ex: MJ PAG")
                 tel = st.text_input("Telefone")
-                if st.form_submit_button("💾 Salvar Estabelecimento"):
+                if st.form_submit_button("💾 Salvar Novo Estabelecimento"):
                     if nome_f:
                         conn.table("estabelecimentos").insert({"nome_fantasia": nome_f.upper().strip(), "cnpj_cpf": doc, "adquirente": adq, "provedor": prov.upper(), "telefone": tel}).execute()
-                        st.success("Cadastrado!")
+                        st.success("Cadastrado com sucesso!")
+                        st.rerun()
                     else: st.error("Nome é obrigatório.")
+
         with tab_list:
             res_est = conn.table("estabelecimentos").select("*").execute()
             if res_est.data:
-                st.dataframe(pd.DataFrame(res_est.data)[['nome_fantasia', 'cnpj_cpf', 'adquirente', 'provedor', 'nome_plano_ativo']], use_container_width=True)
+                df_est = pd.DataFrame(res_est.data)
+                
+                # Tabela editável para atualizar dados existentes
+                st.write("Dica: Clique nas células para editar e depois clique no botão salvar abaixo.")
+                df_editado = st.data_editor(
+                    df_est,
+                    column_order=("nome_fantasia", "cnpj_cpf", "adquirente", "provedor", "nome_plano_ativo", "telefone", "email", "endereco"),
+                    column_config={
+                        "nome_fantasia": st.column_config.TextColumn("Nome Fantasia", disabled=True),
+                        "nome_plano_ativo": st.column_config.TextColumn("Plano Atual", disabled=True),
+                        "id": None # Esconde o ID
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                    key="editor_estabelecimentos"
+                )
+
+                if st.button("💾 Salvar Alterações nos Clientes"):
+                    for index, row in df_editado.iterrows():
+                        # Atualiza no banco usando o ID da linha
+                        conn.table("estabelecimentos").update({
+                            "cnpj_cpf": row["cnpj_cpf"],
+                            "adquirente": row["adquirente"],
+                            "provedor": row["provedor"],
+                            "telefone": row["telefone"],
+                            "email": row["email"],
+                            "endereco": row["endereco"]
+                        }).eq("id", row["id"]).execute()
+                    st.success("✅ Informações atualizadas com sucesso!")
+                    st.rerun()
+            else:
+                st.info("Nenhum cliente cadastrado.")
 
     # --- 5. ABA: CRIAR / CONSULTAR PLANOS ---
     elif menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
@@ -90,16 +124,14 @@ else:
                 res_taxas_view = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_plano_sel).execute()
                 if res_taxas_view.data:
                     df_view = pd.DataFrame(res_taxas_view.data)
-                    # Organização e Ordenação
                     df_pivot = df_view.pivot(index='meio', columns='bandeira', values='taxa_decimal')
                     df_pivot = df_pivot.reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                     df_pivot.columns = [c.capitalize() for c in df_pivot.columns]
                     st.write(f"### Taxas do Plano: {plano_sel}")
-                    # CORREÇÃO AQUI: applymap virou map nas versões novas do Pandas
                     st.dataframe(df_pivot.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
         with tab_new:
             st.subheader("📑 Criando Novo Plano")
-            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: CASH DAY")
+            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: VIP 12X")
             df_setup = pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Mastercard (%)": [0.0]*13, "Visa (%)": [0.0]*13, "Elo (%)": [0.0]*13, "Amex (%)": [0.0]*13, "Hipercard (%)": [0.0]*13})
             df_editado = st.data_editor(df_setup, use_container_width=True, hide_index=True)
             if st.button("🚀 SALVAR PLANO COMPLETO"):
@@ -172,4 +204,4 @@ else:
             else: st.info("Sem vendas.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v15.0")
+st.sidebar.caption("MJ Soluções Comercial v16.0")
