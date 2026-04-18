@@ -54,7 +54,7 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: ESTABELECIMENTOS (EDITÁVEL) ---
+    # --- 4. ABA: ESTABELECIMENTOS ---
     if menu == "🏫 Estabelecimentos" and st.session_state.perfil == "admin":
         st.title("🏫 Gestão de Estabelecimentos")
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
@@ -78,27 +78,29 @@ else:
         with tab_list:
             res_est = conn.table("estabelecimentos").select("*").execute()
             if res_est.data:
-                df_est = pd.DataFrame(res_est.data)
+                df_orig = pd.DataFrame(res_est.data)
                 
-                # Tabela editável para atualizar dados existentes
-                st.write("Dica: Clique nas células para editar e depois clique no botão salvar abaixo.")
+                st.write("Dica: Agora você pode editar o **Nome Fantasia** e todos os outros dados diretamente na tabela.")
                 df_editado = st.data_editor(
-                    df_est,
+                    df_orig,
                     column_order=("nome_fantasia", "cnpj_cpf", "adquirente", "provedor", "nome_plano_ativo", "telefone", "email", "endereco"),
                     column_config={
-                        "nome_fantasia": st.column_config.TextColumn("Nome Fantasia", disabled=True),
                         "nome_plano_ativo": st.column_config.TextColumn("Plano Atual", disabled=True),
-                        "id": None # Esconde o ID
+                        "id": None 
                     },
                     use_container_width=True,
                     hide_index=True,
-                    key="editor_estabelecimentos"
+                    key="editor_est_v2"
                 )
 
-                if st.button("💾 Salvar Alterações nos Clientes"):
+                if st.button("💾 Salvar Alterações"):
                     for index, row in df_editado.iterrows():
-                        # Atualiza no banco usando o ID da linha
+                        antigo_nome = df_orig.iloc[index]["nome_fantasia"]
+                        novo_nome = row["nome_fantasia"].upper().strip()
+
+                        # 1. Atualiza a tabela de Estabelecimentos
                         conn.table("estabelecimentos").update({
+                            "nome_fantasia": novo_nome,
                             "cnpj_cpf": row["cnpj_cpf"],
                             "adquirente": row["adquirente"],
                             "provedor": row["provedor"],
@@ -106,7 +108,14 @@ else:
                             "email": row["email"],
                             "endereco": row["endereco"]
                         }).eq("id", row["id"]).execute()
-                    st.success("✅ Informações atualizadas com sucesso!")
+
+                        # 2. Se o nome mudou, atualiza também a tabela de taxas para não quebrar o dashboard
+                        if novo_nome != antigo_nome:
+                            conn.table("taxas_clientes").update({"cliente": novo_nome}).eq("cliente", antigo_nome).execute()
+                            # Opcional: Atualiza histórico de vendas (pode ser lento se houver milhares de linhas)
+                            # conn.table("vendas").update({"lojista": novo_nome}).eq("lojista", antigo_nome).execute()
+
+                    st.success("✅ Tudo atualizado! Nome Fantasia e taxas sincronizados.")
                     st.rerun()
             else:
                 st.info("Nenhum cliente cadastrado.")
@@ -119,7 +128,7 @@ else:
             res_p = conn.table("planos_mj").select("*").execute()
             if res_p.data:
                 planos_nomes = [p['nome_plano'] for p in res_p.data]
-                plano_sel = st.selectbox("Selecione um plano para visualizar:", options=planos_nomes)
+                plano_sel = st.selectbox("Selecione um plano:", options=planos_nomes)
                 id_plano_sel = next(p['id'] for p in res_p.data if p['nome_plano'] == plano_sel)
                 res_taxas_view = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_plano_sel).execute()
                 if res_taxas_view.data:
@@ -127,7 +136,6 @@ else:
                     df_pivot = df_view.pivot(index='meio', columns='bandeira', values='taxa_decimal')
                     df_pivot = df_pivot.reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                     df_pivot.columns = [c.capitalize() for c in df_pivot.columns]
-                    st.write(f"### Taxas do Plano: {plano_sel}")
                     st.dataframe(df_pivot.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
         with tab_new:
             st.subheader("📑 Criando Novo Plano")
@@ -157,7 +165,7 @@ else:
             lista_clientes = sorted([e['nome_fantasia'] for e in res_e.data])
             with st.form("form_vinculo"):
                 cliente_sel = st.selectbox("Selecione o Estabelecimento", options=lista_clientes)
-                ns_input = st.text_input("NS da Maquininha (Para vários, separe por vírgula)")
+                ns_input = st.text_input("NS da Maquininha (Separe por vírgula)")
                 plano_sel = st.selectbox("Selecione o Plano", options=list(dict_planos.keys()))
                 if st.form_submit_button("✅ FINALIZAR VÍNCULO", use_container_width=True):
                     id_p = dict_planos[plano_sel]
@@ -170,7 +178,6 @@ else:
                     conn.table("taxas_clientes").insert(novas_taxas).execute()
                     conn.table("estabelecimentos").update({"nome_plano_ativo": plano_sel}).eq("nome_fantasia", cliente_sel).execute()
                     st.success(f"Vínculo realizado!")
-        else: st.warning("Cadastre estabelecimentos e planos primeiro.")
 
     # --- 7. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
