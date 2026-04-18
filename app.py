@@ -4,16 +4,13 @@ from st_supabase_connection import SupabaseConnection
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# Configuração visual profissional
 st.set_page_config(page_title="Portal MJ Soluções", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO ---
-# Certifique-se de que os segredos estão configurados no Streamlit Cloud
-SUPABASE_URL = st.secrets["supabase"]["url"]
-SUPABASE_KEY = st.secrets["supabase"]["key"]
+SUPABASE_URL = st.secrets["https://oiuyklgtcazbtuvwmelv.supabase.co"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"]
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# Função para converter data (InfinitePay e PicPay)
 def converter_data(data_str):
     try:
         if not data_str: return None
@@ -41,86 +38,86 @@ if st.session_state.perfil is None:
             st.rerun()
         else: st.error("❌ Usuário ou senha incorretos.")
 else:
-    # --- INTERFACE LOGADA ---
-    
-    # 🔄 ATUALIZAÇÃO AUTOMÁTICA (A cada 30 segundos)
-    st_autorefresh(interval=30000, key="datarefresh")
+    # --- MENU LATERAL ---
+    opcoes_menu = ["🏠 Home", "🛒 Suas vendas"]
+    if st.session_state.perfil == "admin":
+        opcoes_menu.append("⚙️ Administração")
+    opcoes_menu.append("🚪 Sair")
 
-    # Barra Lateral
     st.sidebar.title(f"👤 {st.session_state.usuario}")
-    
-    # 🕒 RELÓGIO DE SINCRONIZAÇÃO (Para você saber que está atualizando)
-    st.sidebar.markdown(f"""
-        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; border-left: 5px solid #2ecc71;">
-            <small>🔄 <b>Sincronizado às:</b> {datetime.now().strftime('%H:%M:%S')}</small><br>
-            <small>Próxima atualização em 30s</small>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    st.sidebar.divider()
-    menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Home", "🏦 Seu banco", "🛒 Suas vendas", "🚪 Sair"])
+    st.sidebar.caption(f"🕒 Sincronizado: {datetime.now().strftime('%H:%M:%S')}")
+    menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     
     if menu == "🚪 Sair": 
         st.session_state.perfil = None
         st.rerun()
 
-    try:
-        # 1. Busca dados da tabela/view
-        df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+    # --- ABA: ADMINISTRAÇÃO (APENAS CADASTRO INDIVIDUAL) ---
+    if menu == "⚙️ Administração":
+        st.title("⚙️ Cadastrar Taxa Individual")
+        st.write("Insira as informações abaixo para cadastrar a taxa específica de um cliente.")
         
-        if not df_v.empty:
-            # 2. FILTRO DE SEGURANÇA E LIMPEZA (Remove nan e nomes inválidos)
-            df_v = df_v.dropna(subset=['lojista'])
-            df_v = df_v[df_v['lojista'].astype(str).str.lower() != 'nan'].copy()
-            df_v = df_v[~df_v['lojista'].str.contains("NÃO", na=False)].copy()
-            df_v = df_v[df_v['lojista'] != 'NÃO IDENTIFICADO'].copy()
-
-            # 3. Tratamento de Datas
-            df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
-            df_v = df_v.dropna(subset=['data_dt'])
-
-            # --- FILTROS ADMIN vs CLIENTE ---
-            if st.session_state.perfil == "admin":
-                st.title("👨‍✈️ Painel Geral MJ")
-                lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
-                escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
-                v_c = df_v[df_v['lojista'].isin(escolha)].copy()
-            else:
-                st.title(f"🏠 Painel: {st.session_state.usuario}")
-                v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
-
-            # Filtro de Data na Sidebar
-            st.sidebar.divider()
-            d_min = v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date()
-            d_max = v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date()
+        with st.form("form_nova_taxa", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            novo_cliente = col1.text_input("Nome do Cliente (Ex: MJ INFINITE...)")
+            novo_ns = col2.text_input("Número de Série (NS) ou Terminal")
             
-            d_ini = st.sidebar.date_input("Início", d_min)
-            d_fim = st.sidebar.date_input("Fim", d_max)
-            v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
-
-            # --- MÉTRICAS ---
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
-            m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
-            m3.metric("Qtd Vendas", len(v_c))
+            col3, col4, col5 = st.columns(3)
+            nova_bandeira = col3.selectbox("Bandeira", ["mastercard", "visa", "elo", "amex", "hipercard"])
+            novo_meio = col4.text_input("Plano (Ex: em 12x, à vista, débito)")
+            nova_taxa = col5.number_input("Taxa Decimal (Ex: 0.1019 para 10.19%)", format="%.4f")
             
-            if st.session_state.perfil == "admin":
-                m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
+            if st.form_submit_button("✅ Salvar Novo Cadastro"):
+                if novo_cliente and novo_ns and novo_meio:
+                    conn.table("taxas_clientes").insert({
+                        "cliente": novo_cliente.upper().strip(), 
+                        "ns": novo_ns.strip(), 
+                        "bandeira": nova_bandeira, 
+                        "meio": novo_meio.lower().strip(), 
+                        "taxa_decimal": nova_taxa
+                    }).execute()
+                    st.success(f"Sucesso! Taxa cadastrada para o cliente {novo_cliente.upper()}.")
+                    st.cache_data.clear() # Limpa o cache para as novas vendas pegarem a taxa
+                else:
+                    st.error("Por favor, preencha todos os campos obrigatórios.")
 
-            st.write("---")
+    # --- ABA: HOME / VENDAS ---
+    elif menu in ["🏠 Home", "🛒 Suas vendas"]:
+        st_autorefresh(interval=30000, key="datarefresh")
+        try:
+            df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             
-            # --- TABELA DE VENDAS ---
-            st.subheader("📋 Relatório de Transações")
-            exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
-            # Formata taxa para %
-            exibir['taxa_cliente'] = (pd.to_numeric(exibir['taxa_cliente'], errors='coerce') * 100).map('{:.2f}%'.format)
-            
-            st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
+            if not df_v.empty:
+                df_v = df_v[df_v['lojista'].astype(str).str.lower() != 'nan'].copy()
+                df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
+                df_v = df_v.dropna(subset=['data_dt'])
 
-        else: 
-            st.info("Aguardando novas sincronizações dos robôs...")
+                if st.session_state.perfil == "admin":
+                    st.title("👨‍✈️ Painel Geral MJ")
+                    lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
+                    escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
+                    v_c = df_v[df_v['lojista'].isin(escolha)].copy()
+                else:
+                    st.title(f"🏠 Painel: {st.session_state.usuario}")
+                    v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
 
-    except Exception as e: 
-        st.error(f"Erro no carregamento: {e}")
+                # Filtro Data
+                st.sidebar.divider()
+                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date())
+                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date())
+                v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
 
-    st.sidebar.caption("Sincronização em tempo real ativa")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
+                m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
+                m3.metric("Qtd Vendas", len(v_c))
+                if st.session_state.perfil == "admin":
+                    m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
+
+                st.write("---")
+                st.subheader("📋 Relatório de Transações")
+                st.dataframe(v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
+
+        except Exception as e: st.error(f"Erro: {e}")
+
+st.sidebar.caption("MJ Soluções Comercial v4.1")
