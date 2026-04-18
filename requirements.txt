@@ -2,3 +2,4 @@ pandas
 streamlit
 st-supabase-connection
 streamlit-autorefresh
+fpdf2
