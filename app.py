@@ -61,12 +61,9 @@ if st.session_state.perfil is None:
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Usuário ou senha incorretos.")
 else:
-    # --- 3. MENU LATERAL ---
+    # --- MENU ---
     opcoes = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
-    
-    st.sidebar.title(f"👤 {st.session_state.usuario}")
-    st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;"><small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
@@ -90,10 +87,10 @@ else:
                 df_ed = st.data_editor(df_e, column_order=("nome_fantasia", "email", "senha", "adquirente", "nome_plano_ativo"), use_container_width=True, hide_index=True)
                 if st.button("💾 Salvar Alterações"):
                     for _, r in df_ed.iterrows():
-                        conn.table("estabelecimentos").update({"nome_fantasia": r["nome_fantasia"].upper(), "email": r["email"].lower(), "senha": r["senha"]}).eq("id", r["id"]).execute()
+                        conn.table("estabelecimentos").update({"nome_fantasia": str(r["nome_fantasia"]).upper(), "email": str(r["email"]).lower(), "senha": str(r["senha"])}).eq("id", r["id"]).execute()
                     st.success("Atualizado!"); st.rerun()
 
-    # --- 5. ABA: CRIAR PLANOS (TAXA INTEIRA + CUSTO) ---
+    # --- 5. ABA: CRIAR PLANOS ---
     elif menu == "📂 Criar Planos":
         st.title("📂 Planos de Taxas")
         tab_v, tab_n = st.tabs(["📋 Meus Planos", "➕ Criar Novo Plano"])
@@ -119,7 +116,7 @@ else:
                 for _, r in df_ed.iterrows():
                     batch.append({"id_plano": id_p, "bandeira": band_sel, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo Adquirente (%)']/100})
                 conn.table("taxas_dos_planos").insert(batch).execute()
-                st.success(f"{band_sel.capitalize()} salvo no plano!")
+                st.success(f"{band_sel.capitalize()} salvo!")
 
     # --- 6. ABA: VINCULAR CLIENTE ---
     elif menu == "👤 Vincular Cliente":
@@ -128,7 +125,7 @@ else:
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         if res_p.data and res_e.data:
             d_p = {p['nome_plano']: p['id'] for p in res_p.data}
-            l_c = sorted([e['nome_fantasia'] for e in res_e.data])
+            l_c = sorted([str(e['nome_fantasia']) for e in res_e.data if e['nome_fantasia']])
             with st.form("vinculo"):
                 c_sel = st.selectbox("Estabelecimento", l_c); ns_in = st.text_input("NS (Separe por vírgula)"); p_sel = st.selectbox("Plano", list(d_p.keys()))
                 if st.form_submit_button("✅ FINALIZAR"):
@@ -148,9 +145,10 @@ else:
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
                 
-                # Filtros
-                st.sidebar.subheader("Filtros")
+                # CORREÇÃO DO ERRO DE ORDENAÇÃO: Garante que lojista é string
+                df['lojista'] = df['lojista'].astype(str).replace('nan', 'DESCONHECIDO')
                 lista_lj = sorted(df['lojista'].unique())
+
                 if st.session_state.perfil == "admin":
                     escolha = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj)
                     df = df[df['lojista'].isin(escolha)]
@@ -161,21 +159,19 @@ else:
                 d_fim = st.sidebar.date_input("Fim", df['data_dt'].max().date())
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
-                # Cálculos
-                bruto = df['bruto'].sum()
-                liquido = df['liquido_cliente'].sum()
-                # Lucro Real = Bruto * (Taxa Cliente - Taxa Custo)
+                # Garantir tipos numéricos para cálculos
+                df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
+                df['liquido_cliente'] = pd.to_numeric(df['liquido_cliente'], errors='coerce').fillna(0)
                 df['taxa_c'] = pd.to_numeric(df['taxa_cliente'], errors='coerce').fillna(0)
                 df['custo_a'] = pd.to_numeric(df.get('custo_adquirente', 0), errors='coerce').fillna(0)
                 df['lucro_rs'] = df['bruto'] * (df['taxa_c'] - df['custo_a'])
-                lucro_total = df['lucro_rs'].sum()
 
-                st.title(f"📊 Painel Geral MJ")
+                st.title(f"📊 Dashboard Geral MJ")
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Faturamento Bruto", f"R$ {bruto:,.2f}")
-                c2.metric("Líquido Esperado", f"R$ {liquido:,.2f}")
-                c3.metric("Qtd Vendas", len(df))
-                if st.session_state.perfil == "admin": c4.metric("Seu Lucro Real", f"R$ {lucro_total:,.2f}")
+                c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                c2.metric("Líquido Total", f"R$ {df['liquido_cliente'].sum():,.2f}")
+                c3.metric("Vendas", len(df))
+                if st.session_state.perfil == "admin": c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
 
                 # Gráficos
                 st.divider()
@@ -184,7 +180,7 @@ else:
                 with g2: st.subheader("💳 Vendas por Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
 
                 if st.button("📄 Gerar Relatório PDF"):
-                    pdf_b = gerar_pdf(df, bruto, lucro_total)
+                    pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
                     st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
 
                 st.write("---")
