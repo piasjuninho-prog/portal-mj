@@ -61,7 +61,7 @@ if st.session_state.perfil is None:
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Credenciais inválidas.")
 else:
-    # --- MENU ---
+    # --- 3. MENU LATERAL ---
     opcoes = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
@@ -135,70 +135,71 @@ else:
                     conn.table("estabelecimentos").update({"nome_plano_ativo": p_sel}).eq("nome_fantasia", c_sel).execute()
                     st.success("Vínculo OK!")
 
-    # --- 7. DASHBOARD ---
+    # --- 7. DASHBOARD (SÓ MOSTRA QUEM ESTÁ CADASTRADO) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
+            # 1. Puxa a lista oficial de estabelecimentos
+            res_of = conn.table("estabelecimentos").select("nome_fantasia").execute()
+            lista_oficial = [str(e['nome_fantasia']) for e in res_of.data]
+
+            # 2. Puxa as vendas
             df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+            
             if not df.empty:
-                # 1. Tratamento robusto de tipos
-                df['lojista'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
-                df['data_dt'] = df['data_venda'].apply(converter_data)
-                df = df.dropna(subset=['data_dt'])
-                
-                # 2. Filtros
-                lista_lj = sorted(df['lojista'].unique())
-                if st.session_state.perfil == "admin":
-                    escolha = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj)
-                    df = df[df['lojista'].isin(escolha)]
-                else:
-                    df = df[df['lojista'] == st.session_state.usuario]
+                # --- O FILTRO DE SEGURANÇA ---
+                # Remove qualquer lojista que NÃO esteja na lista de cadastrados
+                df['lojista'] = df['lojista'].astype(str)
+                df = df[df['lojista'].isin(lista_oficial)].copy()
                 
                 if not df.empty:
-                    st.sidebar.divider()
-                    d_ini = st.sidebar.date_input("Início", df['data_dt'].min().date())
-                    d_fim = st.sidebar.date_input("Fim", df['data_dt'].max().date())
-                    df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
-
-                    # 3. Cálculos protegidos (CORREÇÃO DO ERRO 'int has no fillna')
-                    df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
-                    df['liquido_cliente'] = pd.to_numeric(df['liquido_cliente'], errors='coerce').fillna(0)
+                    df['data_dt'] = df['data_venda'].apply(converter_data)
+                    df = df.dropna(subset=['data_dt'])
                     
-                    # Verifica se as colunas de taxas existem no DataFrame
-                    col_taxa = 'taxa_cliente' if 'taxa_cliente' in df.columns else None
-                    col_custo = 'custo_adquirente' if 'custo_adquirente' in df.columns else None
+                    # Filtros de perfil
+                    if st.session_state.perfil == "admin":
+                        lista_lj_filtro = sorted(df['lojista'].unique())
+                        escolha = st.sidebar.multiselect("Lojistas:", lista_lj_filtro, default=lista_lj_filtro)
+                        df = df[df['lojista'].isin(escolha)]
+                    else:
+                        df = df[df['lojista'] == st.session_state.usuario]
                     
-                    taxa_c = pd.to_numeric(df[col_taxa], errors='coerce').fillna(0) if col_taxa else 0
-                    custo_a = pd.to_numeric(df[col_custo], errors='coerce').fillna(0) if col_custo else 0
-                    
-                    df['lucro_rs'] = df['bruto'] * (taxa_c - custo_a)
+                    if not df.empty:
+                        st.sidebar.divider()
+                        d_ini = st.sidebar.date_input("Início", df['data_dt'].min().date())
+                        d_fim = st.sidebar.date_input("Fim", df['data_dt'].max().date())
+                        df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
-                    st.title(f"📊 Dashboard MJ Soluções")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
-                    c2.metric("Líquido Total", f"R$ {df['liquido_cliente'].sum():,.2f}")
-                    c3.metric("Vendas", len(df))
-                    if st.session_state.perfil == "admin": 
-                        c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
+                        # Cálculos
+                        df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
+                        df['liquido_cliente'] = pd.to_numeric(df['liquido_cliente'], errors='coerce').fillna(0)
+                        
+                        t_c = pd.to_numeric(df['taxa_cliente'], errors='coerce').fillna(0)
+                        c_a = pd.to_numeric(df.get('custo_adquirente', 0), errors='coerce').fillna(0)
+                        df['lucro_rs'] = df['bruto'] * (t_c - c_a)
 
-                    # Gráficos
-                    st.divider()
-                    g1, g2 = st.columns(2)
-                    with g1: 
-                        st.subheader("📈 Faturamento Diário")
-                        st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
-                    with g2: 
-                        st.subheader("💳 Vendas por Bandeira")
-                        st.bar_chart(df.groupby('bandeira')['bruto'].sum())
+                        st.title(f"📊 Dashboard Geral MJ")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                        c2.metric("Líquido Total", f"R$ {df['liquido_cliente'].sum():,.2f}")
+                        c3.metric("Vendas", len(df))
+                        if st.session_state.perfil == "admin": 
+                            c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
 
-                    if st.button("📄 Gerar Relatório PDF"):
-                        pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
-                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+                        st.divider()
+                        g1, g2 = st.columns(2)
+                        with g1: st.subheader("📈 Faturamento Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
+                        with g2: st.subheader("💳 Vendas por Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
 
-                    st.write("---")
-                    st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-                else: st.warning("Nenhuma venda para o filtro.")
+                        if st.button("📄 Gerar Relatório PDF"):
+                            pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
+                            st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+
+                        st.write("---")
+                        st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
+                    else: st.warning("Nenhuma venda de cliente cadastrado para este filtro.")
+                else: st.info("As vendas no banco não pertencem a nenhum cliente cadastrado na aba Estabelecimentos.")
             else: st.info("Sem vendas sincronizadas.")
-        except Exception as e: st.error(f"Erro no processamento: {e}")
+        except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v30.0")
+st.sidebar.caption("MJ Soluções Comercial v31.0")
