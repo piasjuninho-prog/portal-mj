@@ -29,6 +29,7 @@ def converter_data(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
+# --- FUNÇÃO DO PDF CORRIGIDA (LIMPEZA DE CARACTERES ESPECIAIS) ---
 def gerar_pdf(df, total_bruto, lucro):
     pdf = FPDF()
     pdf.add_page()
@@ -39,11 +40,25 @@ def gerar_pdf(df, total_bruto, lucro):
     pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1)
     pdf.cell(95, 10, f"Lucro Real: R$ {lucro:,.2f}", 1, ln=True)
     pdf.ln(5)
+    
+    # Cabeçalho da Tabela
     pdf.set_font("Arial", "B", 10)
-    pdf.cell(30, 8, "Data", 1); pdf.cell(60, 8, "Lojista", 1); pdf.cell(30, 8, "Bandeira", 1); pdf.cell(30, 8, "Bruto", 1); pdf.cell(40, 8, "Liquido", 1, ln=True)
-    pdf.set_font("Arial", "", 9)
-    for _, r in df.head(50).iterrows():
-        pdf.cell(30, 8, str(r['data_venda']), 1); pdf.cell(60, 8, str(r['lojista'])[:25], 1); pdf.cell(30, 8, str(r['bandeira']), 1); pdf.cell(30, 8, f"{r['bruto']:,.2f}", 1); pdf.cell(40, 8, f"{r['liquido_cliente']:,.2f}", 1, ln=True)
+    pdf.cell(35, 8, "Data", 1); pdf.cell(60, 8, "Lojista", 1); pdf.cell(30, 8, "Bandeira", 1); pdf.cell(30, 8, "Bruto", 1); pdf.cell(35, 8, "Liquido", 1, ln=True)
+    
+    # Dados da Tabela
+    pdf.set_font("Arial", "", 8)
+    for _, r in df.head(100).iterrows():
+        # LIMPEZA: Remove o ponto especial '•' e garante que o texto seja compatível com PDF
+        data_limpa = str(r['data_venda']).replace('•', '-').encode('latin-1', 'replace').decode('latin-1')
+        lojista_limpo = str(r['lojista']).encode('latin-1', 'replace').decode('latin-1')
+        bandeira_limpa = str(r['bandeira']).encode('latin-1', 'replace').decode('latin-1')
+        
+        pdf.cell(35, 8, data_limpa, 1)
+        pdf.cell(60, 8, lojista_limpo[:30], 1)
+        pdf.cell(30, 8, bandeira_limpa, 1)
+        pdf.cell(30, 8, f"{r['bruto']:,.2f}", 1)
+        pdf.cell(35, 8, f"{r['liquido_cliente']:,.2f}", 1, ln=True)
+        
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 2. LOGIN ---
@@ -141,26 +156,18 @@ else:
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
-            # 1. Puxa lista oficial de estabelecimentos
             res_oficial = conn.table("estabelecimentos").select("nome_fantasia").execute()
             lista_oficial = [str(e['nome_fantasia']) for e in res_oficial.data]
-            
-            # 2. Puxa vendas
             df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             
             if not df.empty:
-                # Tratamento de datas
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
                 df['lojista'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
                 
-                # --- FILTROS NO MENU LATERAL ---
+                # Filtros
                 st.sidebar.divider()
-                st.sidebar.subheader("Filtros do Dashboard")
-                
-                # Filtro de Lojista
                 if st.session_state.perfil == "admin":
-                    # Filtra apenas os cadastrados oficialmente
                     df = df[df['lojista'].isin(lista_oficial)].copy()
                     lista_lj_filtro = sorted(df['lojista'].unique())
                     escolha = st.sidebar.multiselect("Lojistas:", lista_lj_filtro, default=lista_lj_filtro)
@@ -168,13 +175,11 @@ else:
                 else:
                     df = df[df['lojista'] == st.session_state.usuario]
 
-                # --- FILTRO DE DATA (VOLTOU!) ---
                 d_ini = st.sidebar.date_input("Início:", df['data_dt'].min().date())
                 d_fim = st.sidebar.date_input("Fim:", df['data_dt'].max().date())
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
                 if not df.empty:
-                    # Cálculos
                     df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
                     df['liq_c'] = pd.to_numeric(df.get('liquido_cliente', 0.0), errors='coerce').fillna(0.0)
                     t_cli = pd.Series(pd.to_numeric(df.get('taxa_cliente', 0.0), errors='coerce')).fillna(0.0)
@@ -183,31 +188,26 @@ else:
 
                     st.title(f"📊 Dashboard Geral MJ")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
-                    c2.metric("Líquido Esperado", f"R$ {df['liq_c'].sum():,.2f}")
+                    c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                    c2.metric("Líquido Total", f"R$ {df['liq_c'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
                     if st.session_state.perfil == "admin": 
                         c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
 
                     st.divider()
                     g1, g2 = st.columns(2)
-                    with g1: 
-                        st.subheader("📈 Faturamento Diário")
-                        st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
-                    with g2: 
-                        st.subheader("💳 Vendas por Bandeira")
-                        st.bar_chart(df.groupby('bandeira')['bruto'].sum())
+                    with g1: st.subheader("📈 Faturamento Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
+                    with g2: st.subheader("💳 Vendas por Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
 
+                    # BOTÃO PDF CORRIGIDO
                     if st.button("📄 Gerar Relatório PDF"):
                         pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
-                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio_mj.pdf", "application/pdf")
 
                     st.write("---")
                     st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-                else:
-                    st.warning("Nenhuma venda no período selecionado.")
-            else:
-                st.info("Sem vendas sincronizadas.")
+                else: st.warning("Sem vendas no período.")
+            else: st.info("Sem dados sincronizados.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v33.0")
+st.sidebar.caption("MJ Soluções Comercial v34.0")
