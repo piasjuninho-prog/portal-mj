@@ -8,10 +8,14 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Portal MJ PAG", layout="wide", initial_sidebar_state="expanded")
 
 # --- 1. CONEXÃO ---
-SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
 
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
+
+# Lista padrão de ordenação
+ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
+ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
 # Função para converter data
 def converter_data(data_str):
@@ -86,26 +90,36 @@ else:
                 planos_nomes = [p['nome_plano'] for p in res_p.data]
                 plano_sel = st.selectbox("Selecione um plano para visualizar:", options=planos_nomes)
                 
-                # Busca as taxas do plano selecionado
                 id_plano_sel = next(p['id'] for p in res_p.data if p['nome_plano'] == plano_sel)
                 res_taxas_view = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_plano_sel).execute()
                 
                 if res_taxas_view.data:
                     df_view = pd.DataFrame(res_taxas_view.data)
-                    # Organiza os dados para mostrar igual à grade de criação
+                    
+                    # --- LÓGICA DE ORDENAÇÃO FORÇADA ---
+                    # 1. Pivotamos a tabela
                     df_pivot = df_view.pivot(index='meio', columns='bandeira', values='taxa_decimal')
-                    # Converte de volta para porcentagem para leitura humana
-                    df_pivot = df_pivot * 100
+                    
+                    # 2. Reordenamos as LINHAS (Modalidades)
+                    df_pivot = df_pivot.reindex(ORDEM_MODALIDADES)
+                    
+                    # 3. Reordenamos as COLUNAS (Bandeiras)
+                    df_pivot = df_pivot.reindex(columns=ORDEM_BANDEIRAS)
+                    
+                    # 4. Deixamos os nomes bonitos (Primeira letra Maiúscula)
+                    df_pivot.columns = [c.capitalize() for c in df_pivot.columns]
+                    df_pivot.index.name = "Modalidade"
+                    
                     st.write(f"### Taxas do Plano: {plano_sel}")
-                    st.dataframe(df_pivot.style.format("{:.2f}%"), use_container_width=True)
+                    st.dataframe(df_pivot.applymap(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
             else: st.info("Nenhum plano criado ainda.")
 
         with tab_new:
             st.subheader("📑 Criando Novo Plano Comercial")
             nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO VIP 12X")
-            modalidades = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
             df_setup = pd.DataFrame({
-                "Modalidade": modalidades, "Mastercard (%)": [0.0]*13, "Visa (%)": [0.0]*13, "Elo (%)": [0.0]*13, "Amex (%)": [0.0]*13, "Hipercard (%)": [0.0]*13
+                "Modalidade": ORDEM_MODALIDADES, 
+                "Mastercard (%)": [0.0]*13, "Visa (%)": [0.0]*13, "Elo (%)": [0.0]*13, "Amex (%)": [0.0]*13, "Hipercard (%)": [0.0]*13
             })
             df_editado = st.data_editor(df_setup, use_container_width=True, hide_index=True)
 
@@ -129,7 +143,7 @@ else:
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         if res_p.data and res_e.data:
             dict_planos = {p['nome_plano']: p['id'] for p in res_p.data}
-            lista_clientes = [e['nome_fantasia'] for e in res_e.data]
+            lista_clientes = sorted([e['nome_fantasia'] for e in res_e.data])
             with st.form("form_vinculo"):
                 cliente_sel = st.selectbox("Selecione o Estabelecimento", options=lista_clientes)
                 ns_input = st.text_input("NS da Maquininha (Para vários, separe por vírgula)")
@@ -156,9 +170,10 @@ else:
                 df_v = df_v[df_v['lojista'].notna() & (df_v['lojista'].astype(str).str.lower() != 'nan')].copy()
                 df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
                 df_v = df_v.dropna(subset=['data_dt'])
+                
                 if st.session_state.perfil == "admin":
                     st.title("👨‍✈️ Painel Geral MJ")
-                    lista_lj = sorted(df_v['lojista'].unique())
+                    lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
                     escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
                     v_c = df_v[df_v['lojista'].isin(escolha)].copy()
                 else:
@@ -185,4 +200,4 @@ else:
             else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v12.0")
+st.sidebar.caption("MJ Soluções Comercial v13.0")
