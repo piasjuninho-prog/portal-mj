@@ -41,14 +41,22 @@ if st.session_state.perfil is None:
             st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
         else:
             try:
+                # Busca o usuário pelo e-mail
                 res_user = conn.table("estabelecimentos").select("*").eq("email", u).execute()
                 if res_user.data:
                     dados_user = res_user.data[0]
-                    if p == str(dados_user.get('senha', '12345')):
-                        st.session_state.perfil = "cliente"; st.session_state.usuario = dados_user['nome_fantasia']; st.rerun()
-                    else: st.error("❌ Senha incorreta.")
-                else: st.error("❌ Usuário não encontrado.")
-            except: st.error("Erro na autenticação.")
+                    # Comparação de senha
+                    if str(p) == str(dados_user.get('senha', '12345')):
+                        st.session_state.perfil = "cliente"
+                        st.session_state.usuario = dados_user['nome_fantasia']
+                        st.rerun()
+                    else:
+                        st.error("❌ Senha incorreta. Tente novamente.")
+                else:
+                    st.error("❌ E-mail não encontrado no cadastro.")
+            except Exception as e:
+                # Caso a conexão com o banco falhe na primeira tentativa
+                st.warning("🔄 Estabelecendo conexão... Por favor, clique em Entrar novamente.")
 else:
     # --- 3. MENU LATERAL ---
     opcoes_menu = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"] if st.session_state.perfil == "admin" else ["🏠 Dashboard", "🚪 Sair"]
@@ -58,11 +66,10 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: ESTABELECIMENTOS ---
+    # --- 4. ABA: ESTABELECIMENTOS (ADMIN) ---
     if menu == "🏫 Estabelecimentos" and st.session_state.perfil == "admin":
         st.title("🏫 Gestão de Estabelecimentos")
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
-        
         with tab_cad:
             with st.form("cad_estabelecimento", clear_on_submit=True):
                 nome_f = st.text_input("Nome Fantasia")
@@ -73,42 +80,17 @@ else:
                 if st.form_submit_button("💾 Salvar Novo"):
                     conn.table("estabelecimentos").insert({"nome_fantasia": nome_f.upper().strip(), "email": email_cli.lower().strip(), "cnpj_cpf": doc, "adquirente": adq, "provedor": prov.upper(), "senha": "12345"}).execute()
                     st.success("Cadastrado!"); st.rerun()
-
         with tab_list:
             res_est = conn.table("estabelecimentos").select("*").execute()
             if res_est.data:
                 df_est = pd.DataFrame(res_est.data)
-                # Garante que as colunas existem no DF para o editor
-                for c in ["nome_fantasia", "email", "cnpj_cpf", "adquirente", "provedor", "senha"]:
-                    if c not in df_est.columns: df_est[c] = ""
-
-                st.write("Edite os dados abaixo:")
-                df_ed = st.data_editor(
-                    df_est,
-                    column_order=("nome_fantasia", "email", "senha", "adquirente", "provedor", "nome_plano_ativo"),
-                    column_config={"id": None, "nome_plano_ativo": st.column_config.TextColumn("Plano", disabled=True)},
-                    use_container_width=True, hide_index=True
-                )
-
+                df_ed = st.data_editor(df_est, column_order=("nome_fantasia", "email", "senha", "adquirente", "provedor", "nome_plano_ativo"), column_config={"id": None, "nome_plano_ativo": st.column_config.TextColumn("Plano", disabled=True)}, use_container_width=True, hide_index=True)
                 if st.button("💾 Salvar Alterações"):
-                    try:
-                        for i, r in df_ed.iterrows():
-                            # Fazemos o update apenas dos campos básicos para evitar erro de coluna
-                            payload = {
-                                "nome_fantasia": str(r.get("nome_fantasia", "")).upper(),
-                                "email": str(r.get("email", "")).lower(),
-                                "cnpj_cpf": str(r.get("cnpj_cpf", "")),
-                                "adquirente": r.get("adquirente", ""),
-                                "provedor": r.get("provedor", "")
-                            }
-                            # Só tenta atualizar a senha se ela não estiver vazia no editor
-                            if r.get("senha"): payload["senha"] = str(r["senha"])
-                            
-                            conn.table("estabelecimentos").update(payload).eq("id", r["id"]).execute()
-                        st.success("✅ Atualizado!"); st.rerun()
-                    except Exception as e: st.error(f"Erro ao salvar: {e}")
+                    for i, r in df_ed.iterrows():
+                        conn.table("estabelecimentos").update({"nome_fantasia": str(r.get("nome_fantasia")).upper(), "email": str(r.get("email")).lower(), "senha": str(r.get("senha")), "adquirente": r.get("adquirente"), "provedor": r.get("provedor")}).eq("id", r["id"]).execute()
+                    st.success("✅ Atualizado!"); st.rerun()
 
-    # --- 5. ABA: CRIAR PLANOS ---
+    # --- 5. ABA: CRIAR PLANOS (ADMIN) ---
     elif menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
         st.title("📂 Planos de Taxas")
         tab_view, tab_new = st.tabs(["📋 Meus Planos", "➕ Criar Novo"])
@@ -135,7 +117,7 @@ else:
                 conn.table("taxas_dos_planos").insert(batch).execute()
                 st.success("Salvo!"); st.rerun()
 
-    # --- 6. ABA: VINCULAR CLIENTE ---
+    # --- 6. ABA: VINCULAR CLIENTE (ADMIN) ---
     elif menu == "👤 Vincular Cliente" and st.session_state.perfil == "admin":
         st.title("👤 Vincular Plano")
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
@@ -177,7 +159,7 @@ else:
                     m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}"); m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}"); m3.metric("Qtd Vendas", len(v_c))
                     if st.session_state.perfil == "admin": m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
                     st.write("---"); st.dataframe(v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem dados.")
+            else: st.info("Sem dados sincronizados.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v24.0")
+st.sidebar.caption("MJ Soluções Comercial v25.0")
