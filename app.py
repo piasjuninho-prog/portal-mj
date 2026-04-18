@@ -39,10 +39,10 @@ if st.session_state.perfil is None:
         elif p == "12345":
             st.session_state.perfil = "cliente"; st.session_state.usuario = u
             st.rerun()
-        else: st.error("❌ Usuário ou senha incorretos.")
+        else: st.error("❌ Acesso negado.")
 else:
     # --- 3. MENU LATERAL ---
-    opcoes_menu = ["🏠 Dashboard", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
+    opcoes_menu = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     
     st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;">
@@ -51,77 +51,97 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: CRIAR PLANOS (ESTILO MJ PAG) ---
-    if menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
+    # --- 4. ABA: ESTABELECIMENTOS (NOVA!) ---
+    if menu == "🏫 Estabelecimentos" and st.session_state.perfil == "admin":
+        st.title("🏫 Gestão de Estabelecimentos")
+        
+        tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
+        
+        with tab_cad:
+            with st.form("cad_estabelecimento"):
+                c1, c2 = st.columns(2)
+                nome_f = c1.text_input("Nome Fantasia / Nome no Robô")
+                doc = c2.text_input("CNPJ ou CPF")
+                
+                c3, c4 = st.columns(2)
+                tel = c3.text_input("Telefone de Contato")
+                mail = c4.text_input("E-mail")
+                
+                end = st.text_area("Endereço Completo")
+                
+                if st.form_submit_button("💾 Salvar Estabelecimento"):
+                    if nome_f:
+                        conn.table("estabelecimentos").insert({
+                            "nome_fantasia": nome_f.upper().strip(),
+                            "cnpj_cpf": doc, "telefone": tel,
+                            "email": mail, "endereco": end
+                        }).execute()
+                        st.success(f"Estabelecimento {nome_f} cadastrado!")
+                    else: st.error("Nome é obrigatório.")
+
+        with tab_list:
+            res_est = conn.table("estabelecimentos").select("*").execute()
+            if res_est.data:
+                df_est = pd.DataFrame(res_est.data)
+                st.dataframe(df_est[['nome_fantasia', 'cnpj_cpf', 'nome_plano_ativo', 'telefone', 'email']], use_container_width=True)
+            else: st.info("Nenhum cliente cadastrado.")
+
+    # --- 5. ABA: CRIAR PLANOS ---
+    elif menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
         st.title("📑 Criando Novo Plano Comercial")
-        st.write("Preencha a tabela abaixo com as taxas em % para cada modalidade.")
-        
-        nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO BLACK D+1")
-        
+        nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO VIP 12X")
         modalidades = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
         df_setup = pd.DataFrame({
             "Modalidade": modalidades,
             "Mastercard (%)": [0.0] * 13, "Visa (%)": [0.0] * 13, "Elo (%)": [0.0] * 13,
             "Amex (%)": [0.0] * 13, "Hipercard (%)": [0.0] * 13
         })
-
-        st.subheader("Configuração de Taxas")
         df_editado = st.data_editor(df_setup, use_container_width=True, hide_index=True)
 
-        if st.button("🚀 SALVAR PLANO COMPLETO NO BANCO", use_container_width=True):
+        if st.button("🚀 SALVAR PLANO NO BANCO"):
             if nome_plano:
-                try:
-                    res = conn.table("planos_mj").insert({"nome_plano": nome_plano.upper()}).execute()
-                    id_plano = res.data[0]['id']
-                    
-                    taxas_batch = []
-                    bandeiras_map = {"Mastercard (%)": "mastercard", "Visa (%)": "visa", "Elo (%)": "elo", "Amex (%)": "amex", "Hipercard (%)": "hipercard"}
+                res = conn.table("planos_mj").insert({"nome_plano": nome_plano.upper()}).execute()
+                id_p = res.data[0]['id']
+                taxas_batch = []
+                b_map = {"Mastercard (%)": "mastercard", "Visa (%)": "visa", "Elo (%)": "elo", "Amex (%)": "amex", "Hipercard (%)": "hipercard"}
+                for _, row in df_editado.iterrows():
+                    for col, band in b_map.items():
+                        taxas_batch.append({"id_plano": id_p, "bandeira": band, "meio": row['Modalidade'], "taxa_decimal": row[col]/100})
+                conn.table("taxas_dos_planos").insert(taxas_batch).execute()
+                st.success("Plano Criado!")
 
-                    for _, row in df_editado.iterrows():
-                        mod = row['Modalidade']
-                        for col_nome, band_ref in bandeiras_map.items():
-                            taxas_batch.append({"id_plano": id_plano, "bandeira": band_ref, "meio": mod, "taxa_decimal": row[col_nome]/100})
-                    
-                    conn.table("taxas_dos_planos").insert(taxas_batch).execute()
-                    st.success(f"✅ Plano '{nome_plano}' criado com sucesso!")
-                except Exception as e: st.error(f"Erro: {e}")
-            else: st.warning("⚠️ Digite um nome para o plano.")
-
-    # --- 5. ABA: VINCULAR CLIENTE ---
+    # --- 6. ABA: VINCULAR CLIENTE ---
     elif menu == "👤 Vincular Cliente" and st.session_state.perfil == "admin":
-        st.title("👤 Associar Cliente a um Plano")
+        st.title("👤 Associar Estabelecimento a um Plano")
         
+        # Puxa Planos e Estabelecimentos do Banco
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
+        res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
+        
         dict_planos = {p['nome_plano']: p['id'] for p in res_p.data}
+        lista_clientes = [e['nome_fantasia'] for e in res_e.data]
         
         with st.form("form_vinculo"):
-            nome_cliente = st.text_input("Nome do Cliente (Igual ao Robô)")
-            ns_input = st.text_input("NS da Maquininha (Para vários, separe por vírgula)")
-            plano_selecionado = st.selectbox("Selecione o Plano de Taxas", options=list(dict_planos.keys()))
+            cliente_sel = st.selectbox("Selecione o Estabelecimento", options=lista_clientes)
+            ns_input = st.text_input("NS da Maquininha (PB1F...)")
+            plano_sel = st.selectbox("Selecione o Plano", options=list(dict_planos.keys()))
             
-            if st.form_submit_button("✅ VINCULAR E CONFIGURAR TAXAS", use_container_width=True):
-                if nome_cliente and ns_input:
-                    try:
-                        id_p = dict_planos[plano_selecionado]
-                        res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-                        
-                        # Suporte a múltiplos NS separados por vírgula
-                        lista_ns = [n.strip() for n in ns_input.split(",")]
-                        
-                        novas_taxas = []
-                        for ns_item in lista_ns:
-                            for t in res_t.data:
-                                novas_taxas.append({
-                                    "cliente": nome_cliente.upper().strip(), "ns": ns_item,
-                                    "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']
-                                })
-                        
-                        conn.table("taxas_clientes").insert(novas_taxas).execute()
-                        st.success(f"🚀 {len(lista_ns)} maquininha(s) vinculada(s) ao cliente {nome_cliente}!")
-                    except Exception as e: st.error(f"Erro: {e}")
-                else: st.warning("Preencha Nome e NS.")
+            if st.form_submit_button("✅ FINALIZAR VÍNCULO"):
+                id_p = dict_planos[plano_sel]
+                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                lista_ns = [n.strip() for n in ns_input.split(",")]
+                
+                novas_taxas = []
+                for ns in lista_ns:
+                    for t in res_t.data:
+                        novas_taxas.append({"cliente": cliente_sel, "ns": ns, "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']})
+                
+                conn.table("taxas_clientes").insert(novas_taxas).execute()
+                # Atualiza no cadastro do estabelecimento qual plano ele está usando
+                conn.table("estabelecimentos").update({"nome_plano_ativo": plano_sel}).eq("nome_fantasia", cliente_sel).execute()
+                st.success(f"Vínculo realizado! {cliente_sel} agora usa o {plano_sel}")
 
-    # --- 6. ABA: DASHBOARD ---
+    # --- 7. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -160,4 +180,4 @@ else:
             else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v9.0")
+st.sidebar.caption("MJ Soluções Comercial v10.0")
