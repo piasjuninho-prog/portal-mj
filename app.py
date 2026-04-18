@@ -79,46 +79,12 @@ else:
             res_est = conn.table("estabelecimentos").select("*").execute()
             if res_est.data:
                 df_orig = pd.DataFrame(res_est.data)
-                
-                st.write("Dica: Agora você pode editar o **Nome Fantasia** e todos os outros dados diretamente na tabela.")
-                df_editado = st.data_editor(
-                    df_orig,
-                    column_order=("nome_fantasia", "cnpj_cpf", "adquirente", "provedor", "nome_plano_ativo", "telefone", "email", "endereco"),
-                    column_config={
-                        "nome_plano_ativo": st.column_config.TextColumn("Plano Atual", disabled=True),
-                        "id": None 
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                    key="editor_est_v2"
-                )
-
+                df_editado = st.data_editor(df_orig, column_order=("nome_fantasia", "cnpj_cpf", "adquirente", "provedor", "nome_plano_ativo"), disabled=["nome_plano_ativo"], use_container_width=True, hide_index=True)
                 if st.button("💾 Salvar Alterações"):
                     for index, row in df_editado.iterrows():
-                        antigo_nome = df_orig.iloc[index]["nome_fantasia"]
-                        novo_nome = row["nome_fantasia"].upper().strip()
-
-                        # 1. Atualiza a tabela de Estabelecimentos
-                        conn.table("estabelecimentos").update({
-                            "nome_fantasia": novo_nome,
-                            "cnpj_cpf": row["cnpj_cpf"],
-                            "adquirente": row["adquirente"],
-                            "provedor": row["provedor"],
-                            "telefone": row["telefone"],
-                            "email": row["email"],
-                            "endereco": row["endereco"]
-                        }).eq("id", row["id"]).execute()
-
-                        # 2. Se o nome mudou, atualiza também a tabela de taxas para não quebrar o dashboard
-                        if novo_nome != antigo_nome:
-                            conn.table("taxas_clientes").update({"cliente": novo_nome}).eq("cliente", antigo_nome).execute()
-                            # Opcional: Atualiza histórico de vendas (pode ser lento se houver milhares de linhas)
-                            # conn.table("vendas").update({"lojista": novo_nome}).eq("lojista", antigo_nome).execute()
-
-                    st.success("✅ Tudo atualizado! Nome Fantasia e taxas sincronizados.")
+                        conn.table("estabelecimentos").update({"nome_fantasia": row["nome_fantasia"].upper(), "cnpj_cpf": row["cnpj_cpf"], "adquirente": row["adquirente"], "provedor": row["provedor"]}).eq("id", row["id"]).execute()
+                    st.success("✅ Atualizado!")
                     st.rerun()
-            else:
-                st.info("Nenhum cliente cadastrado.")
 
     # --- 5. ABA: CRIAR / CONSULTAR PLANOS ---
     elif menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
@@ -179,36 +145,51 @@ else:
                     conn.table("estabelecimentos").update({"nome_plano_ativo": plano_sel}).eq("nome_fantasia", cliente_sel).execute()
                     st.success(f"Vínculo realizado!")
 
-    # --- 7. ABA: DASHBOARD ---
+    # --- 7. ABA: DASHBOARD (COM FILTRO DE CLIENTES CADASTRADOS) ---
     elif menu in ["🏠 Dashboard"]:
         st_autorefresh(interval=30000, key="refresh")
         try:
+            # 1. Busca lista de clientes cadastrados oficialmente
+            res_oficial = conn.table("estabelecimentos").select("nome_fantasia").execute()
+            lista_oficial = [e['nome_fantasia'] for e in res_oficial.data]
+
+            # 2. Busca vendas
             df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+            
             if not df_v.empty:
-                df_v = df_v[df_v['lojista'].notna() & (df_v['lojista'].astype(str).str.lower() != 'nan')].copy()
-                df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
-                df_v = df_v.dropna(subset=['data_dt'])
-                if st.session_state.perfil == "admin":
-                    st.title("👨‍✈️ Painel Geral MJ")
-                    lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
-                    escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
-                    v_c = df_v[df_v['lojista'].isin(escolha)].copy()
+                # --- O FILTRO MÁGICO ---
+                # Só mantém vendas onde o lojista está na lista oficial de cadastrados
+                df_v = df_v[df_v['lojista'].isin(lista_oficial)].copy()
+                
+                if not df_v.empty:
+                    df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
+                    df_v = df_v.dropna(subset=['data_dt'])
+                    
+                    if st.session_state.perfil == "admin":
+                        st.title("👨‍✈️ Painel Geral MJ")
+                        lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
+                        escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
+                        v_c = df_v[df_v['lojista'].isin(escolha)].copy()
+                    else:
+                        st.title(f"🏠 Painel: {st.session_state.usuario}")
+                        v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
+                    
+                    st.sidebar.divider()
+                    d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date())
+                    d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date())
+                    v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
+                    
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
+                    m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
+                    m3.metric("Qtd Vendas", len(v_c))
+                    if st.session_state.perfil == "admin":
+                        m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
+                    st.write("---")
+                    st.dataframe(v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
                 else:
-                    st.title(f"🏠 Painel: {st.session_state.usuario}")
-                    v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
-                st.sidebar.divider()
-                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date())
-                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date())
-                v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Bruto Total", f"R$ {v_c['bruto'].sum():,.2f}")
-                m2.metric("Líquido Esperado", f"R$ {v_c['liquido_cliente'].sum():,.2f}")
-                m3.metric("Qtd Vendas", len(v_c))
-                if st.session_state.perfil == "admin":
-                    m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
-                st.write("---")
-                st.dataframe(v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem vendas.")
+                    st.info("Nenhuma venda de cliente cadastrado encontrada.")
+            else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v16.0")
+st.sidebar.caption("MJ Soluções Comercial v17.0")
