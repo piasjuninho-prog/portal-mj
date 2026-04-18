@@ -7,13 +7,13 @@ from streamlit_autorefresh import st_autorefresh
 # Configuração visual profissional
 st.set_page_config(page_title="Portal MJ PAG", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. CONEXÃO DIRETA (CORRIGIDO PARA NÃO DAR ERRO) ---
+# --- 1. CONEXÃO DIRETA ---
 SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# Listas de ordenação fixa
+# Listas de ordenação fixa para os planos
 ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
@@ -70,7 +70,7 @@ else:
                 if st.form_submit_button("💾 Salvar Estabelecimento"):
                     if nome_f:
                         conn.table("estabelecimentos").insert({"nome_fantasia": nome_f.upper().strip(), "cnpj_cpf": doc, "adquirente": adq, "provedor": prov.upper(), "telefone": tel}).execute()
-                        st.success("Cadastrado com sucesso!")
+                        st.success("Cadastrado!")
                     else: st.error("Nome é obrigatório.")
         with tab_list:
             res_est = conn.table("estabelecimentos").select("*").execute()
@@ -90,14 +90,16 @@ else:
                 res_taxas_view = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_plano_sel).execute()
                 if res_taxas_view.data:
                     df_view = pd.DataFrame(res_taxas_view.data)
+                    # Organização e Ordenação
                     df_pivot = df_view.pivot(index='meio', columns='bandeira', values='taxa_decimal')
                     df_pivot = df_pivot.reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                     df_pivot.columns = [c.capitalize() for c in df_pivot.columns]
                     st.write(f"### Taxas do Plano: {plano_sel}")
-                    st.dataframe(df_pivot.applymap(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+                    # CORREÇÃO AQUI: applymap virou map nas versões novas do Pandas
+                    st.dataframe(df_pivot.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
         with tab_new:
             st.subheader("📑 Criando Novo Plano")
-            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: VIP 12X")
+            nome_plano = st.text_input("Nome do Plano", placeholder="Ex: CASH DAY")
             df_setup = pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Mastercard (%)": [0.0]*13, "Visa (%)": [0.0]*13, "Elo (%)": [0.0]*13, "Amex (%)": [0.0]*13, "Hipercard (%)": [0.0]*13})
             df_editado = st.data_editor(df_setup, use_container_width=True, hide_index=True)
             if st.button("🚀 SALVAR PLANO COMPLETO"):
@@ -136,6 +138,7 @@ else:
                     conn.table("taxas_clientes").insert(novas_taxas).execute()
                     conn.table("estabelecimentos").update({"nome_plano_ativo": plano_sel}).eq("nome_fantasia", cliente_sel).execute()
                     st.success(f"Vínculo realizado!")
+        else: st.warning("Cadastre estabelecimentos e planos primeiro.")
 
     # --- 7. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
@@ -169,4 +172,4 @@ else:
             else: st.info("Sem vendas.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v14.0")
+st.sidebar.caption("MJ Soluções Comercial v15.0")
