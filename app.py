@@ -39,36 +39,38 @@ if st.session_state.perfil is None:
         elif p == "12345":
             st.session_state.perfil = "cliente"; st.session_state.usuario = u
             st.rerun()
-        else: st.error("❌ Acesso negado.")
+        else: st.error("❌ Usuário ou senha incorretos.")
 else:
     # --- 3. MENU LATERAL ---
     opcoes_menu = ["🏠 Dashboard", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     
+    # Relógio de atualização
     st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;">
         <small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
     
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: CRIAR PLANOS (ESTILO GRADE COMPLETA) ---
+    # --- 4. ABA: CRIAR PLANOS (ESTILO MJ PAG) ---
     if menu == "📂 Criar Planos" and st.session_state.perfil == "admin":
         st.title("📑 Criando Novo Plano Comercial")
         st.write("Preencha a tabela abaixo com as taxas em % para cada modalidade.")
         
-        nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO PADRÃO D+1")
+        nome_plano = st.text_input("Nome do Plano", placeholder="Ex: PLANO BLACK D+1")
         
-        # Criamos a estrutura de todas as taxas possíveis
+        # Estrutura completa de taxas
         modalidades = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
         dados_vazios = {
             "Modalidade": modalidades,
             "Mastercard (%)": [0.0] * 13,
             "Visa (%)": [0.0] * 13,
-            "Elo (%)": [0.0] * 13
+            "Elo (%)": [0.0] * 13,
+            "Amex (%)": [0.0] * 13,
+            "Hipercard (%)": [0.0] * 13
         }
         df_setup = pd.DataFrame(dados_vazios)
 
-        # Editor de Tabela Profissional
         st.subheader("Configuração de Taxas")
         df_editado = st.data_editor(df_setup, use_container_width=True, hide_index=True)
 
@@ -79,19 +81,29 @@ else:
                     res = conn.table("planos_mj").insert({"nome_plano": nome_plano.upper()}).execute()
                     id_plano = res.data[0]['id']
                     
-                    # 2. Transforma a tabela editada em formato para o banco (Melt)
+                    # 2. Processa todas as colunas de bandeiras
                     taxas_batch = []
+                    bandeiras_map = {
+                        "Mastercard (%)": "mastercard",
+                        "Visa (%)": "visa",
+                        "Elo (%)": "elo",
+                        "Amex (%)": "amex",
+                        "Hipercard (%)": "hipercard"
+                    }
+
                     for _, row in df_editado.iterrows():
                         mod = row['Modalidade']
-                        # Mastercard
-                        taxas_batch.append({"id_plano": id_plano, "bandeira": "mastercard", "meio": mod, "taxa_decimal": row['Mastercard (%)']/100})
-                        # Visa
-                        taxas_batch.append({"id_plano": id_plano, "bandeira": "visa", "meio": mod, "taxa_decimal": row['Visa (%)']/100})
-                        # Elo
-                        taxas_batch.append({"id_plano": id_plano, "bandeira": "elo", "meio": mod, "taxa_decimal": row['Elo (%)']/100})
+                        for col_nome, band_ref in bandeiras_map.items():
+                            taxas_batch.append({
+                                "id_plano": id_plano, 
+                                "bandeira": band_ref, 
+                                "meio": mod, 
+                                "taxa_decimal": row[col_nome]/100
+                            })
                     
+                    # Salva todas as taxas do plano
                     conn.table("taxas_dos_planos").insert(taxas_batch).execute()
-                    st.success(f"✅ Plano '{nome_plano}' com todas as taxas salvo com sucesso!")
+                    st.success(f"✅ Plano '{nome_plano}' criado com sucesso para todas as bandeiras!")
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
             else:
@@ -101,7 +113,7 @@ else:
     elif menu == "👤 Vincular Cliente" and st.session_state.perfil == "admin":
         st.title("👤 Associar Cliente a um Plano")
         
-        # Busca planos existentes
+        # Busca planos cadastrados
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
         dict_planos = {p['nome_plano']: p['id'] for p in res_p.data}
         
@@ -112,27 +124,34 @@ else:
             
             if st.form_submit_button("✅ VINCULAR E CONFIGURAR TAXAS", use_container_width=True):
                 if nome_cliente and ns_cliente:
-                    id_p = dict_planos[plano_selecionado]
-                    # Busca todas as taxas do plano (Débito até 12x)
-                    res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-                    
-                    novas_taxas = []
-                    for t in res_t.data:
-                        novas_taxas.append({
-                            "cliente": nome_cliente.upper().strip(), "ns": ns_cliente.strip(),
-                            "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']
-                        })
-                    
-                    conn.table("taxas_clientes").insert(novas_taxas).execute()
-                    st.success(f"🚀 Cliente {nome_cliente} vinculado com sucesso!")
+                    try:
+                        id_p = dict_planos[plano_selecionado]
+                        # Busca todas as taxas do plano escolhido
+                        res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                        
+                        novas_taxas = []
+                        for t in res_t.data:
+                            novas_taxas.append({
+                                "cliente": nome_cliente.upper().strip(), "ns": ns_cliente.strip(),
+                                "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']
+                            })
+                        
+                        # Insere na tabela que o Dashboard e Robô consultam
+                        conn.table("taxas_clientes").insert(novas_taxas).execute()
+                        st.success(f"🚀 Cliente {nome_cliente} vinculado com sucesso!")
+                    except Exception as e:
+                        st.error(f"Erro ao vincular: {e}")
                 else: st.warning("Preencha Nome e NS.")
 
     # --- 6. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
         st_autorefresh(interval=30000, key="refresh")
         try:
+            # Busca os dados da VIEW dashboard_vendas
             df_v = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+            
             if not df_v.empty:
+                # Limpeza
                 df_v = df_v[df_v['lojista'].notna() & (df_v['lojista'].astype(str).str.lower() != 'nan')].copy()
                 df_v['data_dt'] = df_v['data_venda'].apply(converter_data)
                 df_v = df_v.dropna(subset=['data_dt'])
@@ -146,10 +165,10 @@ else:
                     st.title(f"🏠 Painel: {st.session_state.usuario}")
                     v_c = df_v[df_v['lojista'] == st.session_state.usuario].copy()
 
-                # Filtros
+                # Filtros de data
                 st.sidebar.divider()
-                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date())
-                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date())
+                d_ini = st.sidebar.date_input("Início", v_c['data_dt'].min().date() if not v_c.empty else datetime.now().date())
+                d_fim = st.sidebar.date_input("Fim", v_c['data_dt'].max().date() if not v_c.empty else datetime.now().date())
                 v_c = v_c[(v_c['data_dt'].dt.date >= d_ini) & (v_c['data_dt'].dt.date <= d_fim)]
 
                 # Métricas
@@ -161,11 +180,12 @@ else:
                     m4.metric("Seu Lucro (R$)", f"R$ {v_c['spread_rs'].sum():,.2f}")
 
                 st.write("---")
-                st.subheader("📋 Relatório de Transações")
+                # Exibe Tabela formatada
+                st.subheader("📋 Últimas Transações")
                 exibir = v_c[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
                 exibir['taxa_cliente'] = (pd.to_numeric(exibir['taxa_cliente'], errors='coerce') * 100).map('{:.2f}%'.format)
                 st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
-            else: st.info("Aguardando vendas...")
-        except Exception as e: st.error(f"Erro: {e}")
+            else: st.info("Aguardando novas vendas sincronizadas...")
+        except Exception as e: st.error(f"Erro no Dashboard: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v7.0")
+st.sidebar.caption("MJ Soluções Comercial v8.0")
