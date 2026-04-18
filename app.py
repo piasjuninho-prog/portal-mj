@@ -59,7 +59,7 @@ if st.session_state.perfil is None:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
             if res.data and p == str(res.data[0].get('senha', '12345')):
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
-            else: st.error("❌ Usuário ou senha incorretos.")
+            else: st.error("❌ Credenciais inválidas.")
 else:
     # --- MENU ---
     opcoes = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
@@ -67,15 +67,14 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: ESTABELECIMENTOS ---
+    # --- 4. ESTABELECIMENTOS ---
     if menu == "🏫 Estabelecimentos":
         st.title("🏫 Gestão de Estabelecimentos")
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
         with tab_cad:
             with st.form("cad_est", clear_on_submit=True):
-                c1, c2 = st.columns(2)
-                nome_f = c1.text_input("Nome Fantasia")
-                email_cli = c2.text_input("E-mail de Login")
+                nome_f = st.text_input("Nome Fantasia")
+                email_cli = st.text_input("E-mail de Login")
                 adq = st.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone"])
                 if st.form_submit_button("💾 Salvar"):
                     conn.table("estabelecimentos").insert({"nome_fantasia": nome_f.upper().strip(), "email": email_cli.lower().strip(), "adquirente": adq, "senha": "12345"}).execute()
@@ -90,7 +89,7 @@ else:
                         conn.table("estabelecimentos").update({"nome_fantasia": str(r["nome_fantasia"]).upper(), "email": str(r["email"]).lower(), "senha": str(r["senha"])}).eq("id", r["id"]).execute()
                     st.success("Atualizado!"); st.rerun()
 
-    # --- 5. ABA: CRIAR PLANOS ---
+    # --- 5. CRIAR PLANOS ---
     elif menu == "📂 Criar Planos":
         st.title("📂 Planos de Taxas")
         tab_v, tab_n = st.tabs(["📋 Meus Planos", "➕ Criar Novo Plano"])
@@ -116,9 +115,9 @@ else:
                 for _, r in df_ed.iterrows():
                     batch.append({"id_plano": id_p, "bandeira": band_sel, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo Adquirente (%)']/100})
                 conn.table("taxas_dos_planos").insert(batch).execute()
-                st.success(f"{band_sel.capitalize()} salvo no plano!")
+                st.success(f"{band_sel.capitalize()} salvo!")
 
-    # --- 6. ABA: VINCULAR CLIENTE ---
+    # --- 6. VINCULAR CLIENTE ---
     elif menu == "👤 Vincular Cliente":
         st.title("👤 Vincular Plano")
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
@@ -136,56 +135,61 @@ else:
                     conn.table("estabelecimentos").update({"nome_plano_ativo": p_sel}).eq("nome_fantasia", c_sel).execute()
                     st.success("Vínculo OK!")
 
-    # --- 7. ABA: DASHBOARD ---
+    # --- 7. DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
             df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             if not df.empty:
-                # 1. Tratamento de tipos para evitar o erro de float vs str
+                # 1. Tratamento robusto de tipos
                 df['lojista'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
-                df['bandeira'] = df['bandeira'].fillna('OUTRA').astype(str)
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
                 
-                # 2. Filtros de perfil
+                # 2. Filtros
+                lista_lj = sorted(df['lojista'].unique())
                 if st.session_state.perfil == "admin":
-                    lista_lj = sorted([x for x in df['lojista'].unique() if x != 'nan'])
-                    escolha = st.sidebar.multiselect("Filtrar Lojistas:", lista_lj, default=lista_lj)
+                    escolha = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj)
                     df = df[df['lojista'].isin(escolha)]
                 else:
                     df = df[df['lojista'] == st.session_state.usuario]
                 
                 if not df.empty:
+                    st.sidebar.divider()
                     d_ini = st.sidebar.date_input("Início", df['data_dt'].min().date())
                     d_fim = st.sidebar.date_input("Fim", df['data_dt'].max().date())
                     df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
-                    # 3. Garantir números para cálculos
+                    # 3. Cálculos protegidos (CORREÇÃO DO ERRO 'int has no fillna')
                     df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                     df['liquido_cliente'] = pd.to_numeric(df['liquido_cliente'], errors='coerce').fillna(0)
-                    df['taxa_c'] = pd.to_numeric(df['taxa_cliente'], errors='coerce').fillna(0)
-                    df['custo_a'] = pd.to_numeric(df.get('custo_adquirente', 0), errors='coerce').fillna(0)
-                    df['lucro_rs'] = df['bruto'] * (df['taxa_c'] - df['custo_a'])
+                    
+                    # Verifica se as colunas de taxas existem no DataFrame
+                    col_taxa = 'taxa_cliente' if 'taxa_cliente' in df.columns else None
+                    col_custo = 'custo_adquirente' if 'custo_adquirente' in df.columns else None
+                    
+                    taxa_c = pd.to_numeric(df[col_taxa], errors='coerce').fillna(0) if col_taxa else 0
+                    custo_a = pd.to_numeric(df[col_custo], errors='coerce').fillna(0) if col_custo else 0
+                    
+                    df['lucro_rs'] = df['bruto'] * (taxa_c - custo_a)
 
-                    st.title(f"📊 Dashboard Geral MJ")
+                    st.title(f"📊 Dashboard MJ Soluções")
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
                     c2.metric("Líquido Total", f"R$ {df['liquido_cliente'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
-                    if st.session_state.perfil == "admin": c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
+                    if st.session_state.perfil == "admin": 
+                        c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
 
                     # Gráficos
                     st.divider()
                     g1, g2 = st.columns(2)
                     with g1: 
                         st.subheader("📈 Faturamento Diário")
-                        daily = df.groupby(df['data_dt'].dt.date)['bruto'].sum()
-                        st.line_chart(daily)
+                        st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
                     with g2: 
                         st.subheader("💳 Vendas por Bandeira")
-                        bandeiras = df.groupby('bandeira')['bruto'].sum()
-                        st.bar_chart(bandeiras)
+                        st.bar_chart(df.groupby('bandeira')['bruto'].sum())
 
                     if st.button("📄 Gerar Relatório PDF"):
                         pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
@@ -193,8 +197,8 @@ else:
 
                     st.write("---")
                     st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-                else: st.warning("Nenhuma venda encontrada para os filtros selecionados.")
+                else: st.warning("Nenhuma venda para o filtro.")
             else: st.info("Sem vendas sincronizadas.")
         except Exception as e: st.error(f"Erro no processamento: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v17.0")
+st.sidebar.caption("MJ Soluções Comercial v30.0")
