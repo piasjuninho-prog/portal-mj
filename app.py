@@ -45,45 +45,61 @@ else:
     opcoes_menu = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     
+    # Indicador de Sincronização
     st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;">
         <small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
     
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes_menu)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. ABA: ESTABELECIMENTOS (NOVA!) ---
+    # --- 4. ABA: ESTABELECIMENTOS (COM NOVOS CAMPOS) ---
     if menu == "🏫 Estabelecimentos" and st.session_state.perfil == "admin":
         st.title("🏫 Gestão de Estabelecimentos")
         
         tab_list, tab_cad = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
         
         with tab_cad:
-            with st.form("cad_estabelecimento"):
+            with st.form("cad_estabelecimento", clear_on_submit=True):
+                st.subheader("Informações Básicas")
                 c1, c2 = st.columns(2)
                 nome_f = c1.text_input("Nome Fantasia / Nome no Robô")
                 doc = c2.text_input("CNPJ ou CPF")
                 
+                st.subheader("Configuração de Parceiros")
+                c_adq, c_prov = st.columns(2)
+                adq = c_adq.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone", "PagSeguro", "Outra"])
+                prov = c_prov.text_input("Provedor", placeholder="Ex: MJ PAG")
+
+                st.subheader("Contato e Endereço")
                 c3, c4 = st.columns(2)
                 tel = c3.text_input("Telefone de Contato")
                 mail = c4.text_input("E-mail")
-                
                 end = st.text_area("Endereço Completo")
                 
-                if st.form_submit_button("💾 Salvar Estabelecimento"):
+                if st.form_submit_button("💾 Salvar Estabelecimento", use_container_width=True):
                     if nome_f:
-                        conn.table("estabelecimentos").insert({
-                            "nome_fantasia": nome_f.upper().strip(),
-                            "cnpj_cpf": doc, "telefone": tel,
-                            "email": mail, "endereco": end
-                        }).execute()
-                        st.success(f"Estabelecimento {nome_f} cadastrado!")
-                    else: st.error("Nome é obrigatório.")
+                        try:
+                            conn.table("estabelecimentos").insert({
+                                "nome_fantasia": nome_f.upper().strip(),
+                                "cnpj_cpf": doc, 
+                                "adquirente": adq,
+                                "provedor": prov.upper().strip(),
+                                "telefone": tel,
+                                "email": mail, 
+                                "endereco": end
+                            }).execute()
+                            st.success(f"✅ Estabelecimento {nome_f} cadastrado com sucesso!")
+                        except Exception as e:
+                            st.error(f"Erro ao salvar: {e}")
+                    else: st.error("Nome Fantasia é obrigatório.")
 
         with tab_list:
             res_est = conn.table("estabelecimentos").select("*").execute()
             if res_est.data:
                 df_est = pd.DataFrame(res_est.data)
-                st.dataframe(df_est[['nome_fantasia', 'cnpj_cpf', 'nome_plano_ativo', 'telefone', 'email']], use_container_width=True)
+                # Reorganiza colunas para visualização
+                cols = ['nome_fantasia', 'cnpj_cpf', 'adquirente', 'provedor', 'nome_plano_ativo', 'telefone']
+                st.dataframe(df_est[cols], use_container_width=True)
             else: st.info("Nenhum cliente cadastrado.")
 
     # --- 5. ABA: CRIAR PLANOS ---
@@ -113,33 +129,27 @@ else:
     # --- 6. ABA: VINCULAR CLIENTE ---
     elif menu == "👤 Vincular Cliente" and st.session_state.perfil == "admin":
         st.title("👤 Associar Estabelecimento a um Plano")
-        
-        # Puxa Planos e Estabelecimentos do Banco
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
-        
         dict_planos = {p['nome_plano']: p['id'] for p in res_p.data}
         lista_clientes = [e['nome_fantasia'] for e in res_e.data]
         
         with st.form("form_vinculo"):
             cliente_sel = st.selectbox("Selecione o Estabelecimento", options=lista_clientes)
-            ns_input = st.text_input("NS da Maquininha (PB1F...)")
+            ns_input = st.text_input("NS da Maquininha (Para vários, separe por vírgula)")
             plano_sel = st.selectbox("Selecione o Plano", options=list(dict_planos.keys()))
             
             if st.form_submit_button("✅ FINALIZAR VÍNCULO"):
                 id_p = dict_planos[plano_sel]
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 lista_ns = [n.strip() for n in ns_input.split(",")]
-                
                 novas_taxas = []
                 for ns in lista_ns:
                     for t in res_t.data:
                         novas_taxas.append({"cliente": cliente_sel, "ns": ns, "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal']})
-                
                 conn.table("taxas_clientes").insert(novas_taxas).execute()
-                # Atualiza no cadastro do estabelecimento qual plano ele está usando
                 conn.table("estabelecimentos").update({"nome_plano_ativo": plano_sel}).eq("nome_fantasia", cliente_sel).execute()
-                st.success(f"Vínculo realizado! {cliente_sel} agora usa o {plano_sel}")
+                st.success(f"Vínculo realizado com sucesso!")
 
     # --- 7. ABA: DASHBOARD ---
     elif menu in ["🏠 Dashboard"]:
@@ -153,7 +163,7 @@ else:
 
                 if st.session_state.perfil == "admin":
                     st.title("👨‍✈️ Painel Geral MJ")
-                    lista_lj = sorted(df_v['lojista'].unique())
+                    lista_lj = sorted([str(x) for x in df_v['lojista'].unique() if x])
                     escolha = st.sidebar.multiselect("Filtrar Lojistas:", options=lista_lj, default=lista_lj)
                     v_c = df_v[df_v['lojista'].isin(escolha)].copy()
                 else:
@@ -180,4 +190,4 @@ else:
             else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v10.0")
+st.sidebar.caption("MJ Soluções Comercial v11.0")
