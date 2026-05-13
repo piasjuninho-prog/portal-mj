@@ -98,4 +98,94 @@ else:
                 id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_sel)
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
-                    df_view = pd.DataFrame(res_
+                    df_view = pd.DataFrame(res_t.data)
+                    df_piv = pd.pivot_table(df_view, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last')
+                    df_piv = df_piv.reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                    st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+        with t_n:
+            nome = st.text_input("Nome do Plano"); band = st.selectbox("Bandeira", ORDEM_BANDEIRAS)
+            df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo Adquirente (%)": [0.0]*13}), use_container_width=True, hide_index=True)
+            if st.button("💾 Salvar Bandeira"):
+                res = conn.table("planos_mj").select("*").eq("nome_plano", nome.upper().strip()).execute()
+                if not res.data: res = conn.table("planos_mj").insert({"nome_plano": nome.upper().strip()}).execute()
+                id_p = res.data[0]['id']
+                batch = [{"id_plano": id_p, "bandeira": band, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo Adquirente (%)']/100} for _, r in df_ed.iterrows()]
+                conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
+
+    elif menu == "👤 Vincular Cliente":
+        st.title("👤 Vincular")
+        res_p = conn.table("planos_mj").select("id, nome_plano").execute()
+        res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
+        if res_p.data and res_e.data:
+            d_p = {p['nome_plano']: p['id'] for p in res_p.data}; l_c = sorted([str(e['nome_fantasia']) for e in res_e.data])
+            with st.form("vin"):
+                c_s = st.selectbox("Cliente", l_c); ns_i = st.text_input("NS (Virgula)"); p_s = st.selectbox("Plano", list(d_p.keys()))
+                if st.form_submit_button("Vincular"):
+                    res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", d_p[p_s]).execute()
+                    for ns in [n.strip() for n in ns_i.split(",")]:
+                        novas = [{"cliente": c_s, "ns": ns, "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal'], "custo_decimal": t.get('custo_decimal', 0.0)} for t in res_t.data]
+                        conn.table("taxas_clientes").insert(novas).execute()
+                    conn.table("estabelecimentos").update({"nome_plano_ativo": p_s}).eq("nome_fantasia", c_s).execute(); st.success("OK!")
+
+    # --- 7. DASHBOARD (SISTEMA LIBERADO) ---
+    elif menu == "🏠 Dashboard":
+        st_autorefresh(interval=30000, key="refresh")
+        try:
+            df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
+            if not df.empty:
+                df['data_dt'] = df['data_venda'].apply(converter_data)
+                df = df.dropna(subset=['data_dt'])
+                df['lojista'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
+                
+                # FILTROS NA SIDEBAR
+                st.sidebar.divider(); st.sidebar.subheader("Filtros")
+                
+                # Se for Admin, mostra TODOS os lojistas do banco (Sem restrição de cadastro)
+                lista_lj_filtro = sorted(df['lojista'].unique())
+                if st.session_state.perfil == "admin":
+                    esc = st.sidebar.multiselect("Lojistas:", lista_lj_filtro, default=lista_lj_filtro)
+                    df = df[df['lojista'].isin(esc)]
+                else:
+                    df = df[df['lojista'] == st.session_state.usuario]
+
+                # Filtro de Data (Default: Início do mês atual até hoje)
+                data_padrao_ini = date(datetime.now().year, datetime.now().month, 1)
+                d_ini = st.sidebar.date_input("Início:", data_padrao_ini)
+                d_fim = st.sidebar.date_input("Fim:", datetime.now().date())
+                df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
+
+                if not df.empty:
+                    # Cálculos Blindados
+                    df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
+                    df['liq_c'] = pd.to_numeric(df.get('liquido_cliente', 0.0), errors='coerce').fillna(0.0)
+                    df['tax_c'] = pd.to_numeric(df.get('taxa_cliente', 0.0), errors='coerce').fillna(0.0)
+                    df['cus_a'] = pd.to_numeric(df.get('custo_adquirente', 0.0), errors='coerce').fillna(0.0)
+                    
+                    # Cálculo do Lucro (Spread)
+                    df['lucro_rs'] = df['bruto'] * (df['tax_c'] - df['cus_a'])
+
+                    st.title(f"📊 Dashboard Geral MJ")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                    c2.metric("Líquido Total", f"R$ {df['liq_c'].sum():,.2f}")
+                    c3.metric("Vendas", len(df))
+                    if st.session_state.perfil == "admin": 
+                        c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
+
+                    st.divider()
+                    g1, g2 = st.columns(2)
+                    with g1: st.subheader("📈 Diario"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
+                    with g2: st.subheader("💳 Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
+                    
+                    if st.button("📄 Relatorio PDF"):
+                        pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
+                        st.download_button("📥 Baixar", pdf_b, "relatorio.pdf", "application/pdf")
+
+                    st.write("---")
+                    exibir = df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
+                    st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
+                else: st.warning("Sem vendas no período.")
+            else: st.info("Sem dados sincronizados.")
+        except Exception as e: st.error(f"Erro no processamento: {e}")
+
+st.sidebar.caption("MJ Soluções Comercial v41.0")
