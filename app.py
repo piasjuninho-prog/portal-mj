@@ -133,4 +133,8 @@ else:
                     id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_s)
                     res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                     for ns in [n.strip() for n in ns_i.split(",")]:
-                        novas = [{"cliente": c_s, "ns": ns, "bandeira": t['bandeira'], "meio": t['meio'], "taxa_de
+                        novas = [{"cliente": c_s, "ns": ns, "bandeira": t['bandeira'], "meio": t['meio'], "taxa_decimal": t['taxa_decimal'], "custo_decimal": t.get('custo_decimal', 0)} for t in res_t.data]
+                        conn.table("taxas_clientes").insert(novas).execute()
+                    conn.table("estabelecimentos").update({"nome_plano_ativo": p_s}).eq("nome_fantasia", c_s).execute(); st.success("Vínculo OK!")
+
+st.sidebar.caption("MJ Soluções Comercial v47.0")
