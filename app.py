@@ -29,13 +29,11 @@ def converter_data(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-# --- FUNÇÃO DO PDF ---
 def gerar_pdf(df, total_bruto, lucro):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16)
     pdf.cell(190, 10, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
-    pdf.ln(10)
     pdf.set_font("helvetica", "", 12)
     pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1)
     pdf.cell(95, 10, f"Lucro Real: R$ {lucro:,.2f}", 1, ln=True)
@@ -47,10 +45,10 @@ def gerar_pdf(df, total_bruto, lucro):
         d = str(r['data_venda']).replace('•', '-').encode('latin-1', 'replace').decode('latin-1')
         l = str(r['lojista']).encode('latin-1', 'replace').decode('latin-1')
         b = str(r['bandeira']).encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(35, 8, d, 1); pdf.cell(60, 8, l[:30], 1); pdf.cell(30, 8, b, 1); pdf.cell(30, 8, f"{r['bruto']:,.2f}", 1); pdf.cell(35, 8, f"{r['liquido_cliente']:,.2f}", 1, ln=True)
+        pdf.cell(35, 8, d, 1); pdf.cell(60, 8, l[:30], 1); pdf.cell(30, 8, b, 1); pdf.cell(30, 8, f"{r['bruto']:,.2f}", 1); pdf.cell(40, 8, f"{r['liquido_cliente']:,.2f}", 1, ln=True)
     return bytes(pdf.output())
 
-# --- LOGIN ---
+# --- 2. LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG PRO")
@@ -63,17 +61,15 @@ if st.session_state.perfil is None:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
             if res.data and p == str(res.data[0].get('senha', '12345')):
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
-            else: st.error("❌ Usuário ou senha incorretos.")
+            else: st.error("❌ Credenciais inválidas.")
 else:
     # --- MENU LATERAL ---
     opcoes = ["🏠 Dashboard", "🏫 Estabelecimentos", "📂 Criar Planos", "👤 Vincular Cliente", "🚪 Sair"]
     if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
-    st.sidebar.title(f"👤 {st.session_state.usuario}")
-    st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;"><small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABAS ADMIN ---
+    # --- 4. ABA: ESTABELECIMENTOS ---
     if menu == "🏫 Estabelecimentos":
         st.title("🏫 Gestão")
         t1, t2 = st.tabs(["📋 Lista", "➕ Novo"])
@@ -81,7 +77,7 @@ else:
             with st.form("cad"):
                 n = st.text_input("Nome"); e = st.text_input("E-mail"); a = st.selectbox("Adq", ["InfinitePay", "PicPay"])
                 if st.form_submit_button("Salvar"):
-                    conn.table("estabelecimentos").insert({"nome_fantasia": n.upper(), "email": e.lower(), "adquirente": a, "senha": "12345"}).execute()
+                    conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "adquirente": a, "senha": "12345"}).execute()
                     st.success("OK!"); st.rerun()
         with t1:
             res = conn.table("estabelecimentos").select("*").execute()
@@ -89,37 +85,42 @@ else:
                 df_ed = st.data_editor(pd.DataFrame(res.data), column_order=("nome_fantasia", "email", "senha", "adquirente", "nome_plano_ativo"), use_container_width=True, hide_index=True)
                 if st.button("💾 Salvar"):
                     for _, r in df_ed.iterrows():
-                        conn.table("estabelecimentos").update({"nome_fantasia": str(r["nome_fantasia"]).upper(), "email": str(r["email"]).lower(), "senha": str(r["senha"])}).eq("id", r["id"]).execute()
+                        conn.table("estabelecimentos").update({"nome_fantasia": str(r["nome_fantasia"]).upper().strip(), "email": str(r["email"]).lower().strip(), "senha": str(r["senha"])}).eq("id", r["id"]).execute()
                     st.success("OK!"); st.rerun()
 
+    # --- 5. ABA: CRIAR PLANOS (CORRIGIDA) ---
     elif menu == "📂 Criar Planos":
-        st.title("📂 Planos")
-        t_v, t_n = st.tabs(["📋 Meus Planos", "➕ Novo"])
+        st.title("📂 Planos de Taxas")
+        t_v, t_n = st.tabs(["📋 Meus Planos", "➕ Criar Novo Plano"])
         with t_v:
             res_p = conn.table("planos_mj").select("*").execute()
             if res_p.data:
-                p_s = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
-                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_s)
+                p_sel = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
+                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_sel)
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
-                    df_piv = pd.DataFrame(res_t.data).pivot(index='meio', columns='bandeira', values='taxa_decimal').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                    df_view = pd.DataFrame(res_t.data)
+                    # CORREÇÃO DEFINITIVA: pivot_table trata duplicados automaticamente
+                    df_piv = pd.pivot_table(df_view, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last')
+                    df_piv = df_piv.reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                     st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
         with t_n:
             nome = st.text_input("Nome"); band = st.selectbox("Bandeira", ORDEM_BANDEIRAS)
             df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo Adquirente (%)": [0.0]*13}), use_container_width=True, hide_index=True)
             if st.button("💾 Salvar"):
-                res = conn.table("planos_mj").select("*").eq("nome_plano", nome.upper()).execute()
-                if not res.data: res = conn.table("planos_mj").insert({"nome_plano": nome.upper()}).execute()
+                res = conn.table("planos_mj").select("*").eq("nome_plano", nome.upper().strip()).execute()
+                if not res.data: res = conn.table("planos_mj").insert({"nome_plano": nome.upper().strip()}).execute()
                 id_p = res.data[0]['id']
                 batch = [{"id_plano": id_p, "bandeira": band, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo Adquirente (%)']/100} for _, r in df_ed.iterrows()]
                 conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
 
+    # --- 6. VINCULAR CLIENTE ---
     elif menu == "👤 Vincular Cliente":
         st.title("👤 Vincular")
         res_p = conn.table("planos_mj").select("id, nome_plano").execute()
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         if res_p.data and res_e.data:
-            d_p = {p['nome_plano']: p['id'] for p in res_p.data}; l_c = sorted([str(e['nome_fantasia']) for e in res_e.data if e['nome_fantasia']])
+            d_p = {p['nome_plano']: p['id'] for p in res_p.data}; l_c = sorted([str(e['nome_fantasia']) for e in res_e.data])
             with st.form("vin"):
                 c_s = st.selectbox("Cliente", l_c); ns_i = st.text_input("NS (Virgula)"); p_s = st.selectbox("Plano", list(d_p.keys()))
                 if st.form_submit_button("Vincular"):
@@ -129,53 +130,48 @@ else:
                         conn.table("taxas_clientes").insert(novas).execute()
                     conn.table("estabelecimentos").update({"nome_plano_ativo": p_s}).eq("nome_fantasia", c_s).execute(); st.success("OK!")
 
-    # --- DASHBOARD ---
+    # --- 7. DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
             res_of = conn.table("estabelecimentos").select("nome_fantasia").execute()
-            lista_oficial = [str(e['nome_fantasia']) for e in res_of.data]
+            lista_oficial = [str(e['nome_fantasia']).upper().strip() for e in res_of.data]
             df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
             if not df.empty:
-                df['lojista'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
-                df = df[df['lojista'].isin(lista_oficial)].copy()
-                df['data_dt'] = df['data_venda'].apply(converter_data)
-                df = df.dropna(subset=['data_dt'])
-                
-                # Filtros
-                st.sidebar.divider(); st.sidebar.subheader("Filtros")
-                if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", lista_oficial, default=lista_oficial)
-                    df = df[df['lojista'].isin(esc)]
-                else: df = df[df['lojista'] == st.session_state.usuario]
-
-                d_ini = st.sidebar.date_input("Inicio:", df['data_dt'].min().date())
-                d_fim = st.sidebar.date_input("Fim:", df['data_dt'].max().date())
-                df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
-
+                df['lojista_orig'] = df['lojista'].fillna('DESCONHECIDO').astype(str)
+                df['lojista_up'] = df['lojista_orig'].str.upper().str.strip()
+                df = df[df['lojista_up'].isin(lista_oficial)].copy()
                 if not df.empty:
-                    df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
-                    df['liq_c'] = pd.to_numeric(df.get('liquido_cliente', 0.0), errors='coerce').fillna(0.0)
-                    t_cli = pd.to_numeric(df.get('taxa_cliente', 0.0), errors='coerce'); t_cus = pd.to_numeric(df.get('custo_adquirente', 0.0), errors='coerce')
-                    df['lucro_rs'] = df['bruto'] * (t_cli - t_cus)
-
-                    st.title(f"📊 Dashboard Geral MJ")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
-                    c2.metric("Liquido Total", f"R$ {df['liq_c'].sum():,.2f}")
-                    c3.metric("Vendas", len(df))
-                    if st.session_state.perfil == "admin": c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
-
-                    st.divider(); g1, g2 = st.columns(2)
-                    with g1: st.subheader("📈 Diario"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
-                    with g2: st.subheader("💳 Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
-                    
-                    if st.button("📄 Relatorio PDF"):
-                        pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
-                        st.download_button("📥 Baixar", pdf_b, "relatorio.pdf", "application/pdf")
-                    st.write("---"); st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-                else: st.warning("Sem vendas no periodo.")
-            else: st.info("Sem dados.")
+                    df['data_dt'] = df['data_venda'].apply(converter_data)
+                    df = df.dropna(subset=['data_dt'])
+                    lista_lj_filtro = sorted(df['lojista_orig'].unique())
+                    if st.session_state.perfil == "admin":
+                        esc = st.sidebar.multiselect("Lojistas:", lista_lj_filtro, default=lista_lj_filtro); df = df[df['lojista_orig'].isin(esc)]
+                    else: df = df[df['lojista_orig'] == st.session_state.usuario]
+                    if not df.empty:
+                        d_ini = st.sidebar.date_input("Inicio:", df['data_dt'].min().date()); d_fim = st.sidebar.date_input("Fim:", df['data_dt'].max().date()); df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
+                        df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
+                        df['liq_c'] = pd.to_numeric(df.get('liquido_cliente', 0.0), errors='coerce').fillna(0.0)
+                        t_cli = pd.to_numeric(df.get('taxa_cliente', 0.0), errors='coerce').fillna(0.0)
+                        t_cus = pd.to_numeric(df.get('custo_adquirente', 0.0), errors='coerce').fillna(0.0)
+                        df['lucro_rs'] = df['bruto'] * (t_cli - t_cus)
+                        st.title(f"📊 Dashboard Geral MJ")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                        c2.metric("Liquido Total", f"R$ {df['liq_c'].sum():,.2f}")
+                        c3.metric("Vendas", len(df))
+                        if st.session_state.perfil == "admin": c4.metric("Seu Lucro Real", f"R$ {df['lucro_rs'].sum():,.2f}")
+                        st.divider(); g1, g2 = st.columns(2)
+                        with g1: st.subheader("📈 Diario"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto'].sum())
+                        with g2: st.subheader("💳 Bandeira"); st.bar_chart(df.groupby('bandeira')['bruto'].sum())
+                        if st.button("📄 Relatorio PDF"):
+                            pdf_b = gerar_pdf(df, df['bruto'].sum(), df['lucro_rs'].sum())
+                            st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+                        st.write("---"); exibir = df[['data_venda', 'lojista_orig', 'bandeira', 'plano', 'bruto', 'taxa_cliente', 'liquido_cliente']].copy()
+                        exibir['taxa_cliente'] = (pd.to_numeric(exibir['taxa_cliente'], errors='coerce') * 100).map('{:.2f}%'.format)
+                        st.dataframe(exibir.sort_index(ascending=False), use_container_width=True)
+                else: st.info("Nenhum dado encontrado para os estabelecimentos cadastrados.")
+            else: st.info("Sem dados sincronizados.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções Comercial v37.0")
+st.sidebar.caption("MJ Soluções Comercial v39.0")
