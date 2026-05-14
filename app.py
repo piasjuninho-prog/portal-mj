@@ -3,6 +3,7 @@ import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 from streamlit_autorefresh import st_autorefresh
+from fpdf import FPDF
 
 # Configuração visual profissional
 st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sidebar_state="expanded")
@@ -49,7 +50,7 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # (Abas de Gestão e Planos mantidas de forma estável)
+    # Abas de Gestão e Planos
     if menu == "🏫 Gestão":
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
@@ -76,7 +77,7 @@ else:
                     conn.table("maquinas_ns").upsert({"ns": ns_i.strip().upper(), "nome_lojista": c_s, "nome_plano": p_s}).execute()
                     st.success("Vinculo OK!")
 
-    # --- 🏠 DASHBOARD (VERSÃO SUPER BLINDADA) ---
+    # --- 🏠 DASHBOARD (CORRIGIDO COM .STR) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -89,26 +90,26 @@ else:
                 df_v = pd.DataFrame(v_raw)
                 df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 
-                # NORMALIZAÇÃO PARA O MERGE NÃO FALHAR
+                # NORMALIZAÇÃO CORRETA COM .STR.
                 df_v['link_key'] = df_v.apply(lambda x: str(x['terminal']).strip().upper() if str(x['adquirente']).lower() == 'picpay' else str(x['ns']).strip().upper(), axis=1)
-                df_m['ns'] = df_m['ns'].astype(str).str.strip().upper()
+                df_m['ns'] = df_m['ns'].astype(str).str.strip().str.upper()
                 
-                # Merge 1: Vendas + Maquinas (Vínculo)
+                # Merge 1: Vendas + Maquinas
                 df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns', how='left')
                 df['lojista_final'] = df['nome_lojista'].fillna(df['lojista']).fillna('NÃO VINCULADO')
 
-                # Merge 2: Busca ID do Plano (Normalizado)
+                # Merge 2: Planos
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'})
-                df_p['nome_plano'] = df_p['nome_plano'].str.strip().upper()
-                df['nome_plano'] = df['nome_plano'].str.strip().upper()
+                df_p['nome_plano'] = df_p['nome_plano'].astype(str).str.strip().str.upper()
+                df['nome_plano'] = df['nome_plano'].astype(str).str.strip().str.upper()
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
 
-                # Merge 3: Busca Taxas
+                # Merge 3: Taxas
                 df_t = pd.DataFrame(t_raw)
-                df_t['meio'] = df_t['meio'].str.strip().lower()
-                df['plano'] = df['plano'].str.strip().lower()
-                df['bandeira'] = df['bandeira'].str.strip().lower()
-                df_t['bandeira'] = df_t['bandeira'].str.strip().lower()
+                df_t['meio'] = df_t['meio'].astype(str).str.strip().str.lower()
+                df['plano'] = df['plano'].astype(str).str.strip().str.lower()
+                df['bandeira'] = df['bandeira'].astype(str).str.strip().str.lower()
+                df_t['bandeira'] = df_t['bandeira'].astype(str).str.strip().str.lower()
                 
                 df = pd.merge(df, df_t, left_on=['id_p', 'bandeira', 'plano'], right_on=['id_plano', 'bandeira', 'meio'], how='left')
                 
@@ -131,7 +132,7 @@ else:
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                     df['liq'] = df['bruto'] * (1 - df['t_cli'])
                     
-                    st.title("📊 Dashboard Geral MJ")
+                    st.title("📊 Dashboard")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
                     c2.metric("Líquido Esperado", f"R$ {df['liq'].sum():,.2f}")
@@ -139,6 +140,6 @@ else:
                     st.divider()
                     st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq']].sort_index(ascending=False), use_container_width=True)
             else: st.info("Sem vendas.")
-        except Exception as e: st.error(f"Aguardando dados... ({e})")
+        except Exception as e: st.error(f"Erro no Dashboard: {e}")
 
-st.sidebar.caption("MJ Soluções v63.0")
+st.sidebar.caption("MJ Soluções v64.0")
