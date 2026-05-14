@@ -3,10 +3,9 @@ import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 from streamlit_autorefresh import st_autorefresh
-from fpdf import FPDF
 
-# Configuração visual profissional
-st.set_page_config(page_title="Portal MJ PAG", layout="wide", initial_sidebar_state="expanded")
+# Configuração visual
+st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sidebar_state="expanded")
 
 # --- 1. CONEXÃO ---
 SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
@@ -32,165 +31,136 @@ def converter_data(data_str):
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG - Acesso")
-    u = st.text_input("Usuário ou E-mail").lower().strip()
+    u = st.text_input("E-mail").lower().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
         if (u == "admin" and p == "mj123"):
-            st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
+            st.session_state.perfil = "admin"; st.session_state.usuario = "ADMIN"; st.rerun()
         else:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
             if res.data and p == str(res.data[0].get('senha', '12345')):
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Acesso negado.")
 else:
-    # --- 3. MENU LATERAL ---
+    # --- MENU LATERAL ---
     opcoes = ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"]
     if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 4. 🏫 SEÇÃO: GESTÃO DE CLIENTES (ARRUMADO!) ---
+    # --- 4. ABA GESTÃO (MANTIDA v52.0) ---
     if menu == "🏫 Gestão":
         st.title("🏫 Gestão de Estabelecimentos")
-        
-        # Criamos as duas abas: uma para ver a lista e outra para cadastrar
-        tab_lista, tab_novo = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
+        t1, t2 = st.tabs(["📋 Lista", "➕ Novo Cadastro"])
+        with t2:
+            with st.form("cad_est"):
+                n = st.text_input("Nome Fantasia"); e = st.text_input("E-mail"); a = st.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone"])
+                if st.form_submit_button("Salvar"):
+                    conn.table("estabelecimentos").insert({"nome_fantasia": n.upper(), "email": e.lower(), "adquirente": a, "senha": "12345"}).execute()
+                    st.success("Cadastrado!"); st.rerun()
+        with t1:
+            res = conn.table("estabelecimentos").select("*").execute()
+            if res.data: st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
-        with tab_novo:
-            st.subheader("Cadastrar Novo Estabelecimento")
-            with st.form("form_novo_est", clear_on_submit=True):
-                c1, c2 = st.columns(2)
-                novo_nome = c1.text_input("Nome Fantasia (Nome no Robô)")
-                novo_doc = c2.text_input("CNPJ ou CPF")
-                
-                c3, c4 = st.columns(2)
-                novo_email = c3.text_input("E-mail de Login")
-                nova_senha = c4.text_input("Senha de Acesso", value="12345")
-                
-                novo_adq = st.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone", "Stone", "PagSeguro"])
-                
-                if st.form_submit_button("💾 Salvar Estabelecimento", use_container_width=True):
-                    if novo_nome and novo_email:
-                        try:
-                            conn.table("estabelecimentos").insert({
-                                "nome_fantasia": novo_nome.upper().strip(),
-                                "email": novo_email.lower().strip(),
-                                "cnpj_cpf": novo_doc,
-                                "adquirente": novo_adq,
-                                "senha": nova_senha
-                            }).execute()
-                            st.success(f"✅ Cliente {novo_nome} cadastrado com sucesso!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao salvar: {e}")
-                    else:
-                        st.warning("⚠️ Preencha o Nome e o E-mail.")
-
-        with tab_lista:
-            st.subheader("Clientes Cadastrados")
-            res_e = conn.table("estabelecimentos").select("*").execute()
-            if res_e.data:
-                df_e = pd.DataFrame(res_e.data)
-                # Tabela editável para correções rápidas
-                df_ed = st.data_editor(
-                    df_e, 
-                    column_order=("nome_fantasia", "email", "senha", "adquirente", "nome_plano_ativo"),
-                    use_container_width=True, 
-                    hide_index=True
-                )
-                
-                if st.button("💾 Salvar Alterações na Lista"):
-                    for _, r in df_ed.iterrows():
-                        conn.table("estabelecimentos").update({
-                            "nome_fantasia": str(r["nome_fantasia"]).upper(),
-                            "email": str(r["email"]).lower(),
-                            "senha": str(r["senha"]),
-                            "adquirente": r["adquirente"]
-                        }).eq("id", r["id"]).execute()
-                    st.success("✅ Dados atualizados!")
-                    st.rerun()
-            else:
-                st.info("Nenhum cliente cadastrado ainda.")
-
-    # --- 5. 📂 SEÇÃO: PLANOS ---
+    # --- 5. ABA PLANOS (MANTIDA v52.0) ---
     elif menu == "📂 Planos":
-        st.title("📂 Planos de Taxas")
-        t_ver, t_criar = st.tabs(["📋 Meus Planos", "➕ Criar Novo"])
-        
-        with t_ver:
-            res_p = conn.table("planos_mj").select("*").execute()
-            if res_p.data:
-                p_s = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
-                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_s)
-                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-                if res_t.data:
-                    df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
-                    st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
-
+        st.title("📂 Configurar Planos")
+        t_ver, t_criar = st.tabs(["📋 Meus Planos", "➕ Novo Plano"])
         with t_criar:
-            nome_p = st.text_input("Nome do Plano (Ex: VIP 12X)")
-            band_s = st.selectbox("Configurar Bandeira:", ORDEM_BANDEIRAS)
-            df_setup = pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo Adquirente (%)": [0.0]*13})
-            df_ed_p = st.data_editor(df_setup, use_container_width=True, hide_index=True)
-            if st.button("💾 Salvar Bandeira no Plano"):
-                res = conn.table("planos_mj").select("*").eq("nome_plano", nome_p.upper().strip()).execute()
-                if not res.data: res = conn.table("planos_mj").insert({"nome_plano": nome_p.upper().strip()}).execute()
+            nome_p = st.text_input("Nome do Plano (Ex: PLANO VIP)")
+            band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
+            df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo (%)": [0.0]*13}), use_container_width=True, hide_index=True)
+            if st.button("💾 Salvar Bandeira"):
+                res = conn.table("planos_mj").select("*").eq("nome_plano", nome_p.upper()).execute()
+                if not res.data: res = conn.table("planos_mj").insert({"nome_plano": nome_p.upper()}).execute()
                 id_p = res.data[0]['id']
-                batch = [{"id_plano": id_p, "bandeira": band_s, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo Adquirente (%)']/100} for _, r in df_ed_p.iterrows()]
-                conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Taxas Salvas!"); st.rerun()
+                batch = [{"id_plano": id_p, "bandeira": band_s, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo (%)']/100} for _, r in df_ed.iterrows()]
+                conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
 
-    # --- 6. 👤 SEÇÃO: VINCULAR ---
+    # --- 6. ABA VINCULAR (AQUI VOCÊ ATRELA O NS AO CLIENTE) ---
     elif menu == "👤 Vincular":
-        st.title("👤 Vincular Plano ao Cliente")
-        res_p = conn.table("planos_mj").select("id, nome_plano").execute()
+        st.title("👤 Vincular Máquina ao Cliente")
+        st.write("Aqui você atrela o código de série da máquina ao lojista e ao plano dele.")
+        
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
-        if res_p.data and res_e.data:
-            with st.form("vin_form"):
-                c_s = st.selectbox("Selecione o Cliente", [e['nome_fantasia'] for e in res_e.data])
-                p_s = st.selectbox("Selecione o Plano", [p['nome_plano'] for p in res_p.data])
-                if st.form_submit_button("✅ Confirmar Vínculo"):
-                    conn.table("estabelecimentos").update({"nome_plano_ativo": p_s}).eq("nome_fantasia", c_s).execute()
-                    st.success(f"Vínculo realizado com sucesso!")
+        res_p = conn.table("planos_mj").select("nome_plano").execute()
+        
+        if res_e.data and res_p.data:
+            with st.form("vinculo_ns"):
+                c_sel = st.selectbox("Selecione o Cliente", [e['nome_fantasia'] for e in res_e.data])
+                ns_input = st.text_input("Número de Série da Máquina (NS)")
+                plano_sel = st.selectbox("Selecione o Plano de Taxas", [p['nome_plano'] for p in res_p.data])
+                
+                if st.form_submit_button("✅ Finalizar Vínculo"):
+                    if ns_input:
+                        # Salva o vínculo NS -> Cliente -> Plano
+                        conn.table("maquinas_ns").upsert({
+                            "ns": ns_input.strip(),
+                            "nome_lojista": c_sel,
+                            "nome_plano": plano_sel
+                        }).execute()
+                        st.success(f"Máquina {ns_input} atrelada ao cliente {c_sel} no {plano_sel}!")
+                    else: st.error("Digite o NS da máquina.")
         else: st.warning("Cadastre clientes e planos primeiro.")
 
-    # --- 7. 🏠 DASHBOARD ---
+    # --- 7. DASHBOARD (O CÉREBRO QUE JUNTA TUDO) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
-            # Puxa dados da View que contém os cálculos
-            df = pd.DataFrame(conn.table("dashboard_vendas").select("*").execute().data)
-            if not df.empty:
+            # 1. Puxa as tabelas brutas
+            df_vendas = pd.DataFrame(conn.table("vendas").select("*").execute().data)
+            df_maquinas = pd.DataFrame(conn.table("maquinas_ns").select("*").execute().data)
+            df_taxas = pd.DataFrame(conn.table("taxas_dos_planos").select("*").execute().data)
+            df_planos_mj = pd.DataFrame(conn.table("planos_mj").select("id, nome_plano").execute().data)
+
+            if not df_vendas.empty and not df_maquinas.empty:
+                # 2. Casamento: Venda + Dono da Máquina (via NS)
+                df = pd.merge(df_vendas, df_maquinas, on='ns', how='inner')
+                
+                # 3. Casamento: Dono da Máquina + ID do Plano
+                df = pd.merge(df, df_planos_mj, left_on='nome_plano', right_on='nome_plano', how='left')
+
+                # 4. Casamento: Venda + Taxas do Plano correspondente
+                df = pd.merge(
+                    df, df_taxas, 
+                    left_on=['id_right', 'bandeira', 'plano'], 
+                    right_on=['id_plano', 'bandeira', 'meio'], 
+                    how='left'
+                )
+
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
-                df['lojista'] = df['lojista'].astype(str)
 
-                # Filtros Sidebar
-                st.sidebar.subheader("Filtros")
-                l_filt = sorted(df['lojista'].unique())
+                # Filtro de Perfil
                 if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=l_filt)
-                    df = df[df['lojista'].isin(esc)]
-                else: df = df[df['lojista'] == st.session_state.usuario]
-
-                d_ini = st.sidebar.date_input("Início", date(datetime.now().year, datetime.now().month, 1))
-                d_fim = st.sidebar.date_input("Fim", datetime.now().date())
-                df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
+                    lista_lj = sorted(df['nome_lojista'].unique())
+                    esc = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj)
+                    df = df[df['nome_lojista'].isin(esc)]
+                else:
+                    df = df[df['nome_lojista'] == st.session_state.usuario]
 
                 if not df.empty:
-                    # Garantir números
-                    for c in ['bruto', 'liquido_cliente', 'spread_rs']:
-                        df[c] = pd.to_numeric(df.get(c, 0.0), errors='coerce').fillna(0.0)
+                    # Cálculos
+                    df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
+                    df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0.0)
+                    df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0.0), errors='coerce').fillna(0.0)
+                    
+                    df['liquido_total'] = df['bruto'] * (1 - df['t_cli'])
+                    df['lucro_total'] = df['bruto'] * (df['t_cli'] - df['t_cus'])
 
                     st.title(f"📊 Dashboard Geral MJ")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
-                    c2.metric("Líquido Esperado", f"R$ {df['liquido_cliente'].sum():,.2f}")
+                    c1.metric("Faturamento Bruto", f"R$ {df['bruto'].sum():,.2f}")
+                    c2.metric("Líquido Esperado", f"R$ {df['liquido_total'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
                     if st.session_state.perfil == "admin": 
-                        c4.metric("Seu Lucro", f"R$ {df['spread_rs'].sum():,.2f}")
-                    
+                        c4.metric("Seu Lucro Real", f"R$ {df['lucro_total'].sum():,.2f}")
+
                     st.divider()
-                    st.dataframe(df[['data_venda', 'lojista', 'bandeira', 'plano', 'bruto', 'liquido_cliente']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem vendas sincronizadas.")
-        except Exception as e: st.error(f"Aguardando dados... ({e})")
+                    st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto', 'taxa_decimal', 'liquido_total']].sort_index(ascending=False), use_container_width=True)
+                else: st.warning("Nenhum dado vinculado para o filtro.")
+            else: st.info("Vá em 'Vincular' para atrelar as máquinas aos clientes.")
+        except Exception as e: st.error(f"Erro: {e}")
+
+st.sidebar.caption("MJ Soluções v53.0")
