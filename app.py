@@ -30,7 +30,7 @@ def converter_data_seguro(data_str):
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG")
-    u = st.text_input("Usuário").lower().strip()
+    u = st.text_input("Usuário ou E-mail").lower().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
         if (u == "admin" and p == "mj123") or (u == "admin@mjpag.com" and p == "mj123"):
@@ -48,37 +48,54 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- 🏫 ABA GESTÃO (RESTAURADA) ---
+    # --- 🏫 ABA GESTÃO (ATUALIZADA COM EXCLUIR) ---
     if menu == "🏫 Gestão":
         st.title("🏫 Gestão de Estabelecimentos")
-        t_lista, t_novo = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
+        t_lista, t_novo, t_excluir = st.tabs(["📋 Lista", "➕ Novo Cadastro", "🗑️ Excluir Cliente"])
         
         with t_novo:
             st.subheader("Cadastrar Novo Lojista")
-            with st.form("form_cad", clear_on_submit=True):
+            with st.form("form_cad_mj", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 n = c1.text_input("Nome Fantasia")
                 e = c2.text_input("E-mail de Login")
                 d = c1.text_input("CNPJ ou CPF")
-                a = c2.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone"])
+                a = c2.selectbox("Adquirente", ["InfinitePay", "PicPay", "Stone", "Stone", "PagSeguro"])
                 if st.form_submit_button("💾 Salvar Estabelecimento"):
                     if n and e:
                         conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "cnpj_cpf": d, "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
-                        st.success("✅ Cadastrado com sucesso!"); st.rerun()
+                        st.success("✅ Cadastrado!"); st.rerun()
                     else: st.error("Nome e E-mail são obrigatórios.")
 
         with t_lista:
             res_e = conn.table("estabelecimentos").select("*").execute()
             if res_e.data:
                 df_e = pd.DataFrame(res_e.data)
-                # Tabela editável para correções
                 df_ed = st.data_editor(df_e, column_order=("nome_fantasia", "email", "senha", "adquirente", "nome_plano_ativo"), use_container_width=True, hide_index=True)
                 if st.button("💾 Salvar Alterações na Lista"):
                     for _, r in df_ed.iterrows():
                         conn.table("estabelecimentos").update({"nome_fantasia": str(r["nome_fantasia"]).upper(), "email": str(r["email"]).lower(), "senha": str(r["senha"]), "adquirente": r["adquirente"]}).eq("id", r["id"]).execute()
                     st.success("✅ Atualizado!"); st.rerun()
 
-    # --- 📂 ABA PLANOS ---
+        with t_excluir:
+            st.subheader("Remover Cliente do Sistema")
+            res_ex = conn.table("estabelecimentos").select("nome_fantasia").execute()
+            if res_ex.data:
+                lista_nomes = sorted([c['nome_fantasia'] for c in res_ex.data])
+                cliente_alvo = st.selectbox("Selecione o cliente para EXCLUIR:", options=lista_nomes)
+                
+                st.warning(f"⚠️ Atenção: Ao excluir '{cliente_alvo}', todos os dados cadastrais dele sumirão.")
+                if st.button("🚨 CONFIRMAR EXCLUSÃO PERMANENTE", use_container_width=True):
+                    # 1. Remove da tabela de estabelecimentos
+                    conn.table("estabelecimentos").delete().eq("nome_fantasia", cliente_alvo).execute()
+                    # 2. Remove da tabela de vínculos de máquinas (NS)
+                    conn.table("maquinas_ns").delete().eq("nome_lojista", cliente_alvo).execute()
+                    st.success(f"O cliente {cliente_alvo} foi removido com sucesso!")
+                    st.rerun()
+            else:
+                st.info("Nenhum cliente para excluir.")
+
+    # --- ABAS PLANOS E VINCULAR (MANTIDAS) ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute()
@@ -90,21 +107,19 @@ else:
                 df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                 st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
-    # --- 👤 ABA VINCULAR ---
     elif menu == "👤 Vincular":
         st.title("👤 Vincular Máquina")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         if res_e.data and res_p.data:
-            with st.form("vin"):
+            with st.form("v"):
                 c = st.selectbox("Cliente", sorted([e['nome_fantasia'] for e in res_e.data]))
-                ns = st.text_input("Código da Máquina (NS ou Terminal)")
+                ns = st.text_input("Código da Máquina")
                 pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]))
                 if st.form_submit_button("Vincular"):
                     for n in [x.strip().upper() for x in ns.split(",")]:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
-                    conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
-                    st.success("Vinculo OK!")
+                    st.success("OK!")
 
     # --- 🏠 DASHBOARD ---
     elif menu == "🏠 Dashboard":
@@ -141,11 +156,10 @@ else:
                     df['bruto'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                     df['liq'] = df['bruto'] * (1 - df['t_cli'])
-                    st.title("📊 Dashboard Geral")
+                    st.title("📊 Dashboard")
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}"); c2.metric("Líquido Esperado", f"R$ {df['liq'].sum():,.2f}"); c3.metric("Vendas", len(df))
+                    c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}"); c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}"); c3.metric("Vendas", len(df))
                     st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem vendas.")
         except Exception as e: st.error(f"Erro no Dashboard: {e}")
 
-st.sidebar.caption("MJ Soluções v79.0")
+st.sidebar.caption("MJ Soluções v80.0")
