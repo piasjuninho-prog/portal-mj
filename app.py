@@ -26,7 +26,7 @@ def converter_data(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-# --- 3. LOGIN ---
+# --- LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG")
@@ -41,14 +41,13 @@ if st.session_state.perfil is None:
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Acesso negado.")
 else:
-    # --- MENU LATERAL ---
     opcoes = ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"]
     if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN (SIMPLIFICADAS PARA ESTABILIDADE)
+    # ABAS ADMIN (SIMPLIFICADAS)
     if menu == "🏫 Gestão":
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
@@ -64,19 +63,20 @@ else:
                 st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
     elif menu == "👤 Vincular":
+        st.title("👤 Vincular Máquina")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         if res_e.data and res_p.data:
             with st.form("v"):
                 c = st.selectbox("Cliente", sorted([str(e['nome_fantasia']) for e in res_e.data if e['nome_fantasia']]))
-                ns = st.text_input("NS (Separe por vírgula)")
+                ns = st.text_input("NS da Maquina (ou Terminal para PicPay)")
                 pl = st.selectbox("Plano", sorted([str(p['nome_plano']) for p in res_p.data if p['nome_plano']]))
                 if st.form_submit_button("Vincular"):
                     for n in [x.strip().upper() for x in ns.split(",")]:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                     st.success("Vinculo OK!")
 
-    # --- 🏠 DASHBOARD (VERSÃO v67.0 - CORREÇÃO DEFINITIVA DE TIPO) ---
+    # --- 🏠 DASHBOARD (VERSÃO v68.0 - DETETIVE) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -89,18 +89,19 @@ else:
                 df_v = pd.DataFrame(v_raw)
                 df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 
-                # TRATAMENTO DE TEXTO ANTES DO MERGE
+                # NORMALIZAÇÃO PARA O MERGE
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper(), axis=1)
                 df_m['ns'] = df_m['ns'].astype(str).str.strip().str.upper()
 
+                # Merge Vendas + Vínculo
                 df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns', how='left')
                 
-                # GARANTE QUE TODOS OS NOMES SÃO STRINGS (LIMPA O ERRO FLOAT VS STR)
-                df['lojista_final'] = df['nome_lojista'].fillna(df['lojista']).fillna('NÃO VINCULADO').astype(str)
+                # NOME EXIBIÇÃO: Se vinculado, usa o nome do cadastro, senão mantém o nome original
+                df['lojista_final'] = df['nome_lojista'].fillna(df['lojista']).astype(str)
                 
+                # Merge Planos e Taxas
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'})
                 df_p['nome_plano'] = df_p['nome_plano'].astype(str).str.strip().str.upper()
-                df['nome_plano'] = df['nome_plano'].astype(str).str.strip().str.upper()
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 
                 df_t = pd.DataFrame(t_raw)
@@ -112,9 +113,8 @@ else:
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
 
-                # FILTRO SEGURO (CONVERTE PARA LISTA E DEPURA ANTES DE ORDENAR)
-                lista_lj_bruta = df['lojista_final'].unique().tolist()
-                lista_lj_limpa = sorted([str(x) for x in lista_lj_bruta if x is not None])
+                # FILTRO SEGURO
+                lista_lj_limpa = sorted([str(x) for x in df['lojista_final'].unique() if x and str(x) != 'nan'])
 
                 st.sidebar.subheader("Filtros")
                 if st.session_state.perfil == "admin":
@@ -123,7 +123,7 @@ else:
                 else:
                     df = df[df['lojista_final'] == st.session_state.usuario]
 
-                # Data Padrão: Abril para ver tudo
+                # Data Padrão
                 d_ini = st.sidebar.date_input("Início", date(2026, 4, 1))
                 d_fim = st.sidebar.date_input("Fim", datetime.now().date())
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
@@ -133,14 +133,16 @@ else:
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                     df['liq'] = df['bruto'] * (1 - df['t_cli'])
                     
-                    st.title("📊 Dashboard Geral")
+                    st.title("📊 Dashboard")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
-                    c2.metric("Líquido Esperado", f"R$ {df['liq'].sum():,.2f}")
+                    c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
                     st.divider()
-                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq']].sort_index(ascending=False), use_container_width=True)
+                    # ADICIONEI A COLUNA 'link_key' PARA VOCÊ COPIAR O NS CERTO
+                    st.write("Dica: Se aparecer 'NÃO VINCULADO', copie o código da coluna 'Link_NS' e vincule ao cliente.")
+                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq', 'link_key']].sort_index(ascending=False), use_container_width=True)
             else: st.info("Sem vendas.")
-        except Exception as e: st.error(f"Erro no Dashboard: {e}")
+        except Exception as e: st.error(f"Aguardando dados... ({e})")
 
-st.sidebar.caption("MJ Soluções v67.0")
+st.sidebar.caption("MJ Soluções v68.0")
