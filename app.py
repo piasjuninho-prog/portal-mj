@@ -41,42 +41,69 @@ if st.session_state.perfil is None:
                 st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Acesso negado.")
 else:
-    opcoes = ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"]
-    if st.session_state.perfil != "admin": opcoes = ["🏠 Dashboard", "🚪 Sair"]
+    # --- MENU LATERAL COMPLETO ---
+    if st.session_state.perfil == "admin":
+        opcoes = ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"]
+    else:
+        opcoes = ["🏠 Dashboard", "🚪 Sair"]
+    
     st.sidebar.title(f"👤 {st.session_state.usuario}")
+    st.sidebar.markdown(f"""<div style="background:#f0f2f6;padding:10px;border-radius:5px;border-left:5px solid #2ecc71;"><small>🔄 <b>Sincronizado:</b> {datetime.now().strftime('%H:%M:%S')}</small></div>""", unsafe_allow_html=True)
+    
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN
+    # --- 🏫 ABA GESTÃO ---
     if menu == "🏫 Gestão":
-        res_e = conn.table("estabelecimentos").select("*").execute()
-        if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
+        st.title("🏫 Gestão de Clientes")
+        t1, t2 = st.tabs(["📋 Lista de Clientes", "➕ Novo Cadastro"])
+        with t2:
+            with st.form("cad_novo"):
+                n = st.text_input("Nome Fantasia"); e = st.text_input("E-mail de Login"); d = st.text_input("CNPJ/CPF"); a = st.selectbox("Adquirente", ["InfinitePay", "PicPay"])
+                if st.form_submit_button("Salvar"):
+                    conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "cnpj_cpf": d, "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
+                    st.success("✅ Cadastrado!"); st.rerun()
+        with t1:
+            res = conn.table("estabelecimentos").select("*").execute()
+            if res.data: st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
+    # --- 📂 ABA PLANOS ---
     elif menu == "📂 Planos":
-        res_p = conn.table("planos_mj").select("*").execute()
-        if res_p.data:
-            p_s = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
-            id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == p_s)
-            res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-            if res_t.data:
-                df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
-                st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+        st.title("📂 Planos de Taxas")
+        tv, tn = st.tabs(["📋 Meus Planos", "➕ Criar Novo"])
+        with tv:
+            res_p = conn.table("planos_mj").select("*").execute()
+            if res_p.data:
+                ps = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
+                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
+                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                if res_t.data:
+                    df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                    st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+        with tn:
+            np = st.text_input("Nome do Plano"); bs = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
+            df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo (%)": [0.0]*13}), use_container_width=True, hide_index=True)
+            if st.button("💾 Salvar Bandeira"):
+                res = conn.table("planos_mj").upsert({"nome_plano": np.upper().strip()}, on_conflict="nome_plano").execute()
+                id_p = res.data[0]['id']
+                batch = [{"id_plano": id_p, "bandeira": bs, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo (%)']/100} for _, r in df_ed.iterrows()]
+                conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
 
+    # --- 👤 ABA VINCULAR ---
     elif menu == "👤 Vincular":
-        st.title("👤 Vincular")
+        st.title("👤 Vincular Máquina")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         if res_e.data and res_p.data:
-            with st.form("v"):
+            with st.form("vinculo"):
                 c = st.selectbox("Cliente", sorted([e['nome_fantasia'] for e in res_e.data]))
                 ns = st.text_input("Código da Máquina (NS ou Terminal)")
                 pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]))
-                if st.form_submit_button("Vincular"):
-                    for n in [x.strip().upper() for x in ns.split(",")]:
-                        conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
-                    st.success("OK!")
+                if st.form_submit_button("✅ Finalizar Vínculo"):
+                    conn.table("maquinas_ns").upsert({"ns": ns.strip().upper(), "nome_lojista": c, "nome_plano": pl}).execute()
+                    st.success("✅ Vínculo realizado!")
 
-    # --- 🏠 DASHBOARD (v76.0 - VÍNCULO INTELIGENTE) ---
+    # --- 🏠 DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -89,19 +116,16 @@ else:
                 df_v = pd.DataFrame(v_raw)
                 df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 
-                # 1. Normalização das chaves enviadas pelo Robô
+                # Vínculo Curto para bater InfinitePay
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper(), axis=1)
-                
-                # 2. VÍNCULO INTELIGENTE: Reduz o link_key para os primeiros 13 caracteres (Padrão NS)
-                # Isso faz com que o código longo da Infinite case com o NS curto que você vinculou
                 df_v['link_key_short'] = df_v['link_key'].str[:13]
-                df_m['ns_short'] = df_m['ns'].str[:13]
+                df_m['ns_short'] = df_m['ns'].astype(str).str.strip().str.upper().str[:13]
 
-                # Merge
+                # Merge Vendas + Maquinas
                 df = pd.merge(df_v, df_m, left_on='link_key_short', right_on='ns_short', how='left')
-                df['lojista_final'] = df.apply(lambda x: x['nome_lojista'] if pd.notnull(x['nome_lojista']) else f"NÃO VINCULADO ({x['link_key'][:15]}...)", axis=1)
+                df['lojista_final'] = df['nome_lojista'].fillna(df['lojista']).astype(str)
 
-                # Taxas
+                # Merge Taxas
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'})
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 df_t = pd.DataFrame(t_raw)
@@ -113,11 +137,15 @@ else:
                 df = df.dropna(subset=['data_dt'])
                 df['data_only'] = df['data_dt'].dt.date
 
+                # FILTRO DE LOJISTAS LIMPO (Admin vê apenas quem tem venda)
+                lista_lj = sorted([x for x in df['lojista_final'].unique() if "NÃO VINCULADO" not in x])
+                
                 st.sidebar.subheader("Filtros")
-                lista_lj = sorted(df['lojista_final'].unique())
                 if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj); df = df[df['lojista_final'].isin(esc)]
-                else: df = df[df['lojista_final'] == st.session_state.usuario]
+                    esc = st.sidebar.multiselect("Lojistas:", sorted(df['lojista_final'].unique()), default=lista_lj)
+                    df = df[df['lojista_final'].isin(esc)]
+                else:
+                    df = df[df['lojista_final'] == st.session_state.usuario]
 
                 d_ini = st.sidebar.date_input("Início", date(2026, 4, 1))
                 d_fim = st.sidebar.date_input("Fim", datetime.now().date())
@@ -137,4 +165,4 @@ else:
             else: st.info("Sem vendas.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções v76.0")
+st.sidebar.caption("MJ Soluções v77.0")
