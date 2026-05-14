@@ -33,7 +33,7 @@ if st.session_state.perfil is None:
     u = st.text_input("Usuário").lower().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
-        if (u == "admin" and p == "mj123") or (u == "admin@mjpag.com" and p == "mj123"):
+        if (u == "admin" and p == "mj123"):
             st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
         else:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
@@ -47,12 +47,14 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN (SIMPLIFICADAS)
+    # --- ABAS ADMIN (MANTIDAS) ---
     if menu == "🏫 Gestão":
+        st.title("🏫 Gestão de Estabelecimentos")
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
 
     elif menu == "📂 Planos":
+        st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute()
         if res_p.data:
             p_s = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
@@ -63,20 +65,20 @@ else:
                 st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
     elif menu == "👤 Vincular":
-        st.title("👤 Vincular Máquina")
+        st.title("👤 Vincular Máquina ao Cliente")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         if res_e.data and res_p.data:
-            with st.form("v"):
-                c = st.selectbox("Cliente", sorted([str(e['nome_fantasia']) for e in res_e.data if e['nome_fantasia']]))
-                ns = st.text_input("NS da Maquina (ou Terminal para PicPay)")
-                pl = st.selectbox("Plano", sorted([str(p['nome_plano']) for p in res_p.data if p['nome_plano']]))
-                if st.form_submit_button("Vincular"):
+            with st.form("vin"):
+                c = st.selectbox("Selecione o Cliente", sorted([str(e['nome_fantasia']) for e in res_e.data]))
+                ns = st.text_input("Número de Série ou Terminal (Copie do Robô)")
+                pl = st.selectbox("Selecione o Plano", sorted([str(p['nome_plano']) for p in res_p.data]))
+                if st.form_submit_button("✅ Vincular"):
                     for n in [x.strip().upper() for x in ns.split(",")]:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
-                    st.success("Vinculo OK!")
+                    st.success("Máquina vinculada!")
 
-    # --- 🏠 DASHBOARD (VERSÃO v68.0 - DETETIVE) ---
+    # --- 🏠 DASHBOARD (O CÉREBRO QUE IDENTIFICA TUDO) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -85,45 +87,41 @@ else:
             p_raw = conn.table("planos_mj").select("id, nome_plano").execute().data
             t_raw = conn.table("taxas_dos_planos").select("*").execute().data
 
-            if v_raw:
+            if v_raw and m_raw:
                 df_v = pd.DataFrame(v_raw)
-                df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
+                df_m = pd.DataFrame(m_raw)
                 
-                # NORMALIZAÇÃO PARA O MERGE
+                # Identifica a chave (Terminal no PicPay, NS no resto)
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper(), axis=1)
-                df_m['ns'] = df_m['ns'].astype(str).str.strip().str.upper()
+                df_m['ns'] = df_m['ns'].astype(str).str.strip().upper()
 
-                # Merge Vendas + Vínculo
-                df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns', how='left')
+                # MERGE 1: Identifica o Cliente e o Plano através do NS/Terminal
+                # Usamos INNER JOIN para mostrar apenas o que você vinculou no portal
+                df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns', how='inner')
                 
-                # NOME EXIBIÇÃO: Se vinculado, usa o nome do cadastro, senão mantém o nome original
-                df['lojista_final'] = df['nome_lojista'].fillna(df['lojista']).astype(str)
-                
-                # Merge Planos e Taxas
+                # Merge 2: Busca Taxas
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'})
-                df_p['nome_plano'] = df_p['nome_plano'].astype(str).str.strip().str.upper()
+                df_t = pd.DataFrame(t_raw)
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 
-                df_t = pd.DataFrame(t_raw)
-                for c in ['bandeira', 'meio']: df_t[c] = df_t[c].astype(str).str.strip().str.lower()
+                # Normaliza bandeira e plano para o merge de taxas
                 for c in ['bandeira', 'plano']: df[c] = df[c].astype(str).str.strip().str.lower()
+                df_t['bandeira'] = df_t['bandeira'].astype(str).str.strip().str.lower()
+                df_t['meio'] = df_t['meio'].astype(str).str.strip().str.lower()
                 
                 df = pd.merge(df, df_t, left_on=['id_p', 'bandeira', 'plano'], right_on=['id_plano', 'bandeira', 'meio'], how='left')
                 
                 df['data_dt'] = df['data_venda'].apply(converter_data)
                 df = df.dropna(subset=['data_dt'])
 
-                # FILTRO SEGURO
-                lista_lj_limpa = sorted([str(x) for x in df['lojista_final'].unique() if x and str(x) != 'nan'])
-
+                # Filtros
                 st.sidebar.subheader("Filtros")
+                lista_lj = sorted(df['nome_lojista'].unique())
                 if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", lista_lj_limpa, default=lista_lj_limpa)
-                    df = df[df['lojista_final'].isin(esc)]
+                    esc = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj); df = df[df['nome_lojista'].isin(esc)]
                 else:
-                    df = df[df['lojista_final'] == st.session_state.usuario]
+                    df = df[df['nome_lojista'] == st.session_state.usuario]
 
-                # Data Padrão
                 d_ini = st.sidebar.date_input("Início", date(2026, 4, 1))
                 d_fim = st.sidebar.date_input("Fim", datetime.now().date())
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
@@ -139,10 +137,9 @@ else:
                     c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
                     st.divider()
-                    # ADICIONEI A COLUNA 'link_key' PARA VOCÊ COPIAR O NS CERTO
-                    st.write("Dica: Se aparecer 'NÃO VINCULADO', copie o código da coluna 'Link_NS' e vincule ao cliente.")
-                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq', 'link_key']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sem vendas.")
-        except Exception as e: st.error(f"Aguardando dados... ({e})")
+                    st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto', 'liq']].sort_index(ascending=False), use_container_width=True)
+                else: st.warning("Sem dados vinculados.")
+            else: st.info("As vendas aparecerão aqui após vincular os NS/Terminais aos Clientes.")
+        except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções v68.0")
+st.sidebar.caption("MJ Soluções v71.0")
