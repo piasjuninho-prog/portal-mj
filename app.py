@@ -3,7 +3,6 @@ import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 from streamlit_autorefresh import st_autorefresh
-from fpdf import FPDF
 
 # 1. Configuração de Página
 st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sidebar_state="expanded")
@@ -31,10 +30,10 @@ def converter_data_seguro(data_str):
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG")
-    u = st.text_input("Usuário ou E-mail").lower().strip()
+    u = st.text_input("Usuário").lower().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
-        if (u == "admin" and p == "mj123") or (u == "admin@mjpag.com" and p == "mj123"):
+        if (u == "admin" and p == "mj123"):
             st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
         else:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
@@ -48,14 +47,12 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABAS ADMIN ---
+    # ABAS ADMIN
     if menu == "🏫 Gestão":
-        st.title("🏫 Gestão")
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
 
     elif menu == "📂 Planos":
-        st.title("📂 Planos")
         res_p = conn.table("planos_mj").select("*").execute()
         if res_p.data:
             p_s = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
@@ -66,19 +63,20 @@ else:
                 st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
     elif menu == "👤 Vincular":
-        st.title("👤 Vincular Máquina")
+        st.title("👤 Vincular")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         if res_e.data and res_p.data:
-            with st.form("vinculo"):
-                c_sel = st.selectbox("Selecione o Cliente", [e['nome_fantasia'] for e in res_e.data])
-                ns_in = st.text_input("Código da Máquina (NS ou Terminal)")
-                p_sel = st.selectbox("Selecione o Plano", [p['nome_plano'] for p in res_p.data])
-                if st.form_submit_button("Finalizar Vínculo"):
-                    conn.table("maquinas_ns").upsert({"ns": ns_in.strip().upper(), "nome_lojista": c_sel, "nome_plano": p_sel}).execute()
-                    st.success("✅ Máquina vinculada!")
+            with st.form("v"):
+                c = st.selectbox("Cliente", sorted([e['nome_fantasia'] for e in res_e.data]))
+                ns = st.text_input("Código da Máquina (NS ou Terminal)")
+                pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]))
+                if st.form_submit_button("Vincular"):
+                    for n in [x.strip().upper() for x in ns.split(",")]:
+                        conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
+                    st.success("OK!")
 
-    # --- 🏠 DASHBOARD ---
+    # --- 🏠 DASHBOARD (v76.0 - VÍNCULO INTELIGENTE) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -91,13 +89,19 @@ else:
                 df_v = pd.DataFrame(v_raw)
                 df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 
+                # 1. Normalização das chaves enviadas pelo Robô
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper(), axis=1)
-                df_m['ns'] = df_m['ns'].astype(str).str.strip().str.upper()
+                
+                # 2. VÍNCULO INTELIGENTE: Reduz o link_key para os primeiros 13 caracteres (Padrão NS)
+                # Isso faz com que o código longo da Infinite case com o NS curto que você vinculou
+                df_v['link_key_short'] = df_v['link_key'].str[:13]
+                df_m['ns_short'] = df_m['ns'].str[:13]
 
-                # LEFT JOIN para não sumir com nada
-                df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns', how='left')
-                df['lojista_final'] = df.apply(lambda x: x['nome_lojista'] if pd.notnull(x['nome_lojista']) else f"NÃO VINCULADO ({x['link_key']})", axis=1)
+                # Merge
+                df = pd.merge(df_v, df_m, left_on='link_key_short', right_on='ns_short', how='left')
+                df['lojista_final'] = df.apply(lambda x: x['nome_lojista'] if pd.notnull(x['nome_lojista']) else f"NÃO VINCULADO ({x['link_key'][:15]}...)", axis=1)
 
+                # Taxas
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'})
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 df_t = pd.DataFrame(t_raw)
@@ -110,9 +114,9 @@ else:
                 df['data_only'] = df['data_dt'].dt.date
 
                 st.sidebar.subheader("Filtros")
-                l_filt = sorted(df['lojista_final'].unique())
+                lista_lj = sorted(df['lojista_final'].unique())
                 if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=l_filt); df = df[df['lojista_final'].isin(esc)]
+                    esc = st.sidebar.multiselect("Lojistas:", lista_lj, default=lista_lj); df = df[df['lojista_final'].isin(esc)]
                 else: df = df[df['lojista_final'] == st.session_state.usuario]
 
                 d_ini = st.sidebar.date_input("Início", date(2026, 4, 1))
@@ -124,13 +128,13 @@ else:
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                     df['liq'] = df['bruto'] * (1 - df['t_cli'])
                     
-                    st.title("📊 Dashboard Geral")
+                    st.title("📊 Dashboard")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Bruto Total", f"R$ {df['bruto'].sum():,.2f}")
                     c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
-                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq', 'link_key']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Aguardando vendas...")
+                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto', 'liq']].sort_index(ascending=False), use_container_width=True)
+            else: st.info("Sem vendas.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções v75.0")
+st.sidebar.caption("MJ Soluções v76.0")
