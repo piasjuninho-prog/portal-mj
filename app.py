@@ -28,23 +28,35 @@ def converter_data_seguro(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-def gerar_pdf(df, total_bruto, lucro):
+# --- FUNÇÃO DO PDF (REMOVIDO LUCRO / ADICIONADO LÍQUIDO PARA O CLIENTE) ---
+def gerar_pdf(df, total_bruto, total_liquido):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16)
-    pdf.cell(190, 10, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
+    pdf.cell(190, 15, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
     pdf.ln(5)
+    
     pdf.set_font("helvetica", "", 12)
-    pdf.cell(95, 10, f"Bruto: R$ {total_bruto:,.2f}", 1)
-    pdf.cell(95, 10, f"Lucro Real: R$ {lucro:,.2f}", 1, ln=True)
-    pdf.ln(5)
-    pdf.set_font("helvetica", "B", 9)
-    pdf.cell(30, 8, "Data", 1); pdf.cell(50, 8, "Lojista", 1); pdf.cell(25, 8, "Bandeira", 1); pdf.cell(25, 8, "Taxa %", 1); pdf.cell(25, 8, "Bruto", 1); pdf.cell(35, 8, "Liquido", 1, ln=True)
+    # Caixa de Resumo para o Cliente (Bruto e Líquido que ele recebe)
+    pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1, align="C")
+    pdf.cell(95, 10, f"Liquido a Receber: R$ {total_liquido:,.2f}", 1, ln=True, align="C")
+    pdf.ln(10)
+    
+    # Cabeçalho da Tabela
+    pdf.set_font("helvetica", "B", 10)
+    pdf.cell(35, 8, "Data", 1); pdf.cell(60, 8, "Lojista", 1); pdf.cell(30, 8, "Bandeira", 1); pdf.cell(30, 8, "Bruto", 1); pdf.cell(35, 8, "Liquido", 1, ln=True)
+    
+    # Dados da Tabela
     pdf.set_font("helvetica", "", 8)
-    for _, r in df.head(50).iterrows():
-        d = str(r.get('data_venda', ''))[:10]
-        l = str(r.get('lojista_final', ''))[:20]
-        pdf.cell(30, 8, d, 1); pdf.cell(50, 8, l, 1); pdf.cell(25, 8, str(r.get('bandeira', '')), 1); pdf.cell(25, 8, str(r.get('taxa_txt', '')), 1); pdf.cell(25, 8, f"{float(r.get('bruto_v', 0)):,.2f}", 1); pdf.cell(35, 8, f"{float(r.get('liq', 0)):,.2f}", 1, ln=True)
+    for _, r in df.head(200).iterrows(): # Aumentei para 200 linhas
+        d = str(r.get('data_venda', ''))[:10].replace('•', '-')
+        l = str(r.get('lojista_final', ''))[:25].encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(35, 8, d, 1)
+        pdf.cell(60, 8, l, 1)
+        pdf.cell(30, 8, str(r.get('bandeira', '')), 1)
+        pdf.cell(30, 8, f"{float(r.get('bruto_v', 0)):,.2f}", 1)
+        pdf.cell(35, 8, f"{float(r.get('liq', 0)):,.2f}", 1, ln=True)
+        
     return bytes(pdf.output())
 
 # --- LOGIN ---
@@ -69,16 +81,16 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABAS ADMIN (ESTÁVEIS) ---
+    # ABAS ADMIN (ESTÁVEIS)
     if menu == "🏫 Gestão":
         st.title("🏫 Gestão de Clientes")
         t1, t2, t3 = st.tabs(["📋 Lista", "➕ Novo Cadastro", "🗑️ Excluir"])
         with t2:
             with st.form("cad_est"):
-                n = st.text_input("Nome Fantasia"); e = st.text_input("E-mail"); d = st.text_input("CNPJ/CPF"); a = st.selectbox("Adq", ["InfinitePay", "PicPay"])
+                n = st.text_input("Nome Fantasia"); e = st.text_input("E-mail"); d = st.text_input("CNPJ/CPF"); a = st.selectbox("Adquirente", ["InfinitePay", "PicPay"])
                 if st.form_submit_button("Salvar"):
-                    conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "cnpj_cpf": d, "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
-                    st.success("Cadastrado!"); st.rerun()
+                    conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
+                    st.success("OK!"); st.rerun()
         with t1:
             res_e = conn.table("estabelecimentos").select("*").execute()
             if res_e.data:
@@ -94,7 +106,7 @@ else:
 
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
-        tv, tn = st.tabs(["📋 Meus Planos", "➕ Criar Novo"])
+        tv, tn = st.tabs(["📋 Meus Planos", "➕ Novo"])
         with tv:
             res_p = conn.table("planos_mj").select("*").execute()
             if res_p.data:
@@ -129,7 +141,7 @@ else:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                     conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute(); st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v85.0 - ARREDONDAMENTO E LIMPEZA) ---
+    # --- 🏠 DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -142,14 +154,11 @@ else:
                 df_v = pd.DataFrame(v_raw); df_m = pd.DataFrame(m_raw); df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'}); df_t = pd.DataFrame(t_raw)
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper()[:13], axis=1)
                 df_m['ns_short'] = df_m['ns'].astype(str).str.strip().str.upper().str[:13]
-                
                 df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns_short', how='inner')
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
-                
                 for c in ['bandeira', 'meio']: df_t[c] = df_t[c].astype(str).str.strip().str.lower()
                 for c in ['bandeira', 'plano']: df[c] = df[c].astype(str).str.strip().str.lower()
                 df = pd.merge(df, df_t, left_on=['id_p', 'bandeira', 'plano'], right_on=['id_plano', 'bandeira', 'meio'], how='left')
-                
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro); df = df.dropna(subset=['data_dt'])
                 df['lojista_final'] = df['nome_lojista'].astype(str)
 
@@ -164,12 +173,9 @@ else:
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
                 if not df.empty:
-                    # CÁLCULOS COM ARREDONDAMENTO (Round 2)
                     df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0).round(2)
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0.0)
                     df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0.0), errors='coerce').fillna(0.0)
-                    
-                    # Coluna Líquido e Lucro arredondadas para 2 casas
                     df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
                     df['lucro_real'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                     df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
@@ -186,13 +192,13 @@ else:
                     with g1: st.subheader("📈 Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto_v'].sum())
                     with g2: st.subheader("💳 Bandeiras"); st.bar_chart(df.groupby('bandeira')['bruto_v'].sum())
                     
-                    if st.button("📄 Relatório PDF"):
-                        pdf_b = gerar_pdf(df, df['bruto_v'].sum(), df['lucro_real'].sum())
-                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+                    if st.button("📄 Gerar Relatório PDF"):
+                        # PASSA APENAS BRUTO E LÍQUIDO PARA O PDF (SEM LUCRO)
+                        pdf_b = gerar_pdf(df, df['bruto_v'].sum(), df['liq'].sum())
+                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio_vendas.pdf", "application/pdf")
 
-                    # TABELA FORMATADA
                     st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Aguardando vendas...")
+            else: st.info("Sincronize os vínculos.")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções v85.0")
+st.sidebar.caption("MJ Soluções v86.0")
