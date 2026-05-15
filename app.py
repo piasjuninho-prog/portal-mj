@@ -69,7 +69,7 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS GESTÃO / PLANOS / VINCULAR (MANTIDAS v83.0)
+    # --- ABAS ADMIN (ESTÁVEIS) ---
     if menu == "🏫 Gestão":
         st.title("🏫 Gestão de Clientes")
         t1, t2, t3 = st.tabs(["📋 Lista", "➕ Novo Cadastro", "🗑️ Excluir"])
@@ -81,7 +81,9 @@ else:
                     st.success("Cadastrado!"); st.rerun()
         with t1:
             res_e = conn.table("estabelecimentos").select("*").execute()
-            if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
+            if res_e.data:
+                df_e = pd.DataFrame(res_e.data)
+                st.data_editor(df_e, column_order=("nome_fantasia", "email", "senha", "adquirente", "nome_plano_ativo"), use_container_width=True, hide_index=True)
         with t3:
             res_ex = conn.table("estabelecimentos").select("nome_fantasia").execute()
             if res_ex.data:
@@ -106,11 +108,10 @@ else:
                     df_res['Taxa Cliente'] = (df_res['taxa_decimal'] * 100).map("{:.2f}%".format)
                     df_res['Custo Adquirente'] = (df_res['custo_decimal'] * 100).map("{:.2f}%".format)
                     st.dataframe(df_res[['Taxa Cliente', 'Custo Adquirente']], use_container_width=True)
-
         with tn:
             nome_p = st.text_input("Nome do Plano"); band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
             df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo (%)": [0.0]*13}), use_container_width=True, hide_index=True)
-            if st.button("💾 Salvar Bandeira"):
+            if st.button("💾 Salvar Bandeira no Plano"):
                 res = conn.table("planos_mj").upsert({"nome_plano": nome_p.upper().strip()}, on_conflict="nome_plano").execute()
                 id_p = res.data[0]['id']
                 batch = [{"id_plano": id_p, "bandeira": band_s, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo (%)']/100} for _, r in df_ed.iterrows()]
@@ -128,7 +129,7 @@ else:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                     conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute(); st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v84.0 - COM TAXA EM PORCENTAGEM) ---
+    # --- 🏠 DASHBOARD (v85.0 - ARREDONDAMENTO E LIMPEZA) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -163,16 +164,17 @@ else:
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
                 if not df.empty:
-                    df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
+                    # CÁLCULOS COM ARREDONDAMENTO (Round 2)
+                    df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0).round(2)
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0.0)
                     df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0.0), errors='coerce').fillna(0.0)
                     
-                    df['liq'] = df['bruto_v'] * (1 - df['t_cli'])
-                    df['lucro_real'] = df['bruto_v'] * (df['t_cli'] - df['t_cus'])
-                    # Coluna formatada para exibição em %
+                    # Coluna Líquido e Lucro arredondadas para 2 casas
+                    df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
+                    df['lucro_real'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                     df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
-                    st.title("📊 Dashboard")
+                    st.title("📊 Dashboard Geral")
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
                     c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
@@ -184,13 +186,13 @@ else:
                     with g1: st.subheader("📈 Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto_v'].sum())
                     with g2: st.subheader("💳 Bandeiras"); st.bar_chart(df.groupby('bandeira')['bruto_v'].sum())
                     
-                    if st.button("📄 Gerar PDF"):
+                    if st.button("📄 Relatório PDF"):
                         pdf_b = gerar_pdf(df, df['bruto_v'].sum(), df['lucro_real'].sum())
                         st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
 
-                    # TABELA COM A TAXA DO CLIENTE EM PORCENTAGEM (%)
+                    # TABELA FORMATADA
                     st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sincronize os vínculos.")
+            else: st.info("Aguardando vendas...")
         except Exception as e: st.error(f"Erro: {e}")
 
-st.sidebar.caption("MJ Soluções v84.0")
+st.sidebar.caption("MJ Soluções v85.0")
