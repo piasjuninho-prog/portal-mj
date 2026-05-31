@@ -28,34 +28,14 @@ def converter_data_seguro(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-def gerar_pdf(df, total_bruto, total_liquido):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", "B", 16)
-    pdf.cell(190, 15, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
-    pdf.ln(5)
-    pdf.set_font("helvetica", "", 12)
-    pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1, align="C")
-    pdf.cell(95, 10, f"Liquido a Receber: R$ {total_liquido:,.2f}", 1, ln=True, align="C")
-    pdf.ln(10)
-    pdf.set_font("helvetica", "B", 10)
-    pdf.cell(35, 8, "Data", 1); pdf.cell(60, 8, "Lojista", 1); pdf.cell(30, 8, "Bandeira", 1); pdf.cell(30, 8, "Bruto", 1); pdf.cell(35, 8, "Liquido", 1, ln=True)
-    pdf.set_font("helvetica", "", 8)
-    for _, r in df.head(300).iterrows():
-        d = str(r.get('data_venda', ''))[:10].replace('•', '-')
-        l = str(r.get('lojista_final', ''))[:25].encode('latin-1', 'replace').decode('latin-1')
-        b = str(r.get('bandeira', ''))
-        pdf.cell(35, 8, d, 1); pdf.cell(60, 8, l, 1); pdf.cell(30, 8, b, 1); pdf.cell(30, 8, f"{float(r.get('bruto_v', 0)):,.2f}", 1); pdf.cell(35, 8, f"{float(r.get('liq', 0)):,.2f}", 1, ln=True)
-    return bytes(pdf.output())
-
 # --- LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ PAG PRO")
-    u = st.text_input("Usuário ou E-mail").lower().strip()
+    u = st.text_input("Usuário").lower().strip()
     p = st.text_input("Senha", type="password")
     if st.button("Entrar", use_container_width=True):
-        if (u == "admin" and p == "mj123") or (u == "admin@mjpag.com" and p == "mj123"):
+        if (u == "admin" and p == "mj123"):
             st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
         else:
             res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
@@ -69,25 +49,21 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN
+    # ABAS ADMIN (ESTÁVEIS)
     if menu == "🏫 Gestão":
-        st.title("🏫 Gestão de Clientes")
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
 
     elif menu == "📂 Planos":
-        st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute()
         if res_p.data:
-            ps = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
+            ps = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
             id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
             res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
             if res_t.data:
                 df_v = pd.DataFrame(res_t.data)
-                band_view = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
-                df_res = df_v[df_v['bandeira'] == band_view].copy().set_index('meio').reindex(ORDEM_MODALIDADES)
-                df_res['Taxa Cliente'] = (df_res['taxa_decimal'] * 100).map("{:.2f}%".format)
-                st.dataframe(df_res[['Taxa Cliente']], use_container_width=True)
+                df_piv = pd.pivot_table(df_v, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
     elif menu == "👤 Vincular":
         st.title("👤 Vincular")
@@ -101,7 +77,7 @@ else:
                         conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                     st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v93.0 - FIX COLUNA BANDEIRA) ---
+    # --- 🏠 DASHBOARD (v94.0 - FILTRO ANTI-DUPLICIDADE) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -111,7 +87,13 @@ else:
             t_raw = conn.table("taxas_dos_planos").select("*").execute().data
 
             if v_raw:
-                df_v = pd.DataFrame(v_raw); df_m = pd.DataFrame(m_raw); df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'}); df_t = pd.DataFrame(t_raw)
+                df_v = pd.DataFrame(v_raw)
+                
+                # --- A MÁGICA ANTI-DUPLICIDADE ---
+                # Remove vendas identicas (mesma data, mesmo valor, mesmo ns)
+                df_v = df_v.drop_duplicates(subset=['data_venda', 'bruto', 'ns', 'bandeira', 'plano'], keep='first')
+
+                df_m = pd.DataFrame(m_raw); df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'}); df_t = pd.DataFrame(t_raw)
                 
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().lstrip('0') if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper()[:13], axis=1)
                 df_m['ns_short'] = df_m['ns'].astype(str).str.strip().str.lstrip('0').str.upper().str[:13]
@@ -120,25 +102,24 @@ else:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 
                 df['plano_ajustado'] = df['plano'].astype(str).str.strip().str.lower().replace('crédito', 'à vista')
+                df_t_prep = df_t.rename(columns={'bandeira': 'band_p', 'meio': 'meio_p'})
+                df['band_ajustada'] = df['bandeira'].astype(str).str.strip().str.lower()
                 
-                # CORREÇÃO: Prepara a tabela de taxas renomeando a coluna para não haver conflito
-                df_t_prep = df_t.rename(columns={'bandeira': 'bandeira_plano', 'meio': 'meio_plano'})
-                for c in ['bandeira_plano', 'meio_plano']: df_t_prep[c] = df_t_prep[c].astype(str).str.strip().str.lower()
-                
-                df['bandeira_ajustada'] = df['bandeira'].astype(str).str.strip().str.lower()
-                
-                df = pd.merge(df, df_t_prep, left_on=['id_p', 'bandeira_ajustada', 'plano_ajustado'], right_on=['id_plano', 'bandeira_plano', 'meio_plano'], how='left')
-                
+                df = pd.merge(df, df_t_prep, left_on=['id_p', 'band_ajustada', 'plano_ajustado'], right_on=['id_plano', 'band_p', 'meio_p'], how='left')
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro); df = df.dropna(subset=['data_dt'])
                 df['lojista_final'] = df.apply(lambda x: x['nome_lojista'] if pd.notnull(x['nome_lojista']) else f"⚠️ NÃO VINCULADO ({x['link_key']})", axis=1)
 
+                # Filtros
                 st.sidebar.subheader("Filtros")
                 l_filt = sorted(df['lojista_final'].unique())
                 if st.session_state.perfil == "admin":
-                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=l_filt); df = df[df['lojista_final'].isin(esc)]
+                    # Por padrão, NÃO seleciona o "NÃO VINCULADO" para o valor bater com o cliente real
+                    lista_inicial = [x for x in l_filt if "NÃO VINCULADO" not in x]
+                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=lista_inicial)
+                    df = df[df['lojista_final'].isin(esc)]
                 else: df = df[df['lojista_final'] == st.session_state.usuario]
 
-                d_ini = st.sidebar.date_input("Início", date(2026, 4, 1)); d_fim = st.sidebar.date_input("Fim", datetime.now().date())
+                d_ini = st.sidebar.date_input("Início", date(2026, 5, 30)); d_fim = st.sidebar.date_input("Fim", datetime.now().date())
                 df = df[(df.apply(lambda x: x['data_dt'].date(), axis=1) >= d_ini) & (df.apply(lambda x: x['data_dt'].date(), axis=1) <= d_fim)]
 
                 if not df.empty:
@@ -159,15 +140,11 @@ else:
 
                     st.divider()
                     g1, g2 = st.columns(2)
-                    with g1: st.subheader("📈 Diário"); st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto_v'].sum())
-                    with g2: st.subheader("💳 Bandeiras"); st.bar_chart(df.groupby('bandeira')['bruto_v'].sum())
-                    
-                    if st.button("📄 Gerar PDF"):
-                        pdf_b = gerar_pdf(df, df['bruto_v'].sum(), df['liq'].sum())
-                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
+                    with g1: st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto_v'].sum())
+                    with g2: st.bar_chart(df.groupby('bandeira')['bruto_v'].sum())
 
                     st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
             else: st.info("Sincronizando...")
         except Exception as e: st.error(f"Erro no Dashboard: {e}")
 
-st.sidebar.caption("MJ Soluções v93.0")
+st.sidebar.caption("MJ Soluções v94.0")
