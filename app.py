@@ -44,7 +44,8 @@ def gerar_pdf(df, total_bruto, total_liquido):
     for _, r in df.head(300).iterrows():
         d = str(r.get('data_venda', ''))[:10].replace('•', '-')
         l = str(r.get('lojista_final', ''))[:25].encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(35, 8, d, 1); pdf.cell(60, 8, l, 1); pdf.cell(30, 8, str(r.get('bandeira', '')), 1); pdf.cell(30, 8, f"{float(r.get('bruto_v', 0)):,.2f}", 1); pdf.cell(35, 8, f"{float(r.get('liq', 0)):,.2f}", 1, ln=True)
+        b = str(r.get('bandeira', ''))
+        pdf.cell(35, 8, d, 1); pdf.cell(60, 8, l, 1); pdf.cell(30, 8, b, 1); pdf.cell(30, 8, f"{float(r.get('bruto_v', 0)):,.2f}", 1); pdf.cell(35, 8, f"{float(r.get('liq', 0)):,.2f}", 1, ln=True)
     return bytes(pdf.output())
 
 # --- LOGIN ---
@@ -69,15 +70,15 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN (ESTÁVEIS)
+    # ABAS ADMIN (MANTIDAS)
     if menu == "🏫 Gestão":
         st.title("🏫 Gestão de Clientes")
-        t1, t2, t3 = st.tabs(["📋 Lista", "➕ Novo Cadastro", "🗑️ Excluir"])
+        t1, t2, t3 = st.tabs(["📋 Lista", "➕ Novo", "🗑️ Excluir"])
         with t2:
             with st.form("cad_est"):
                 n = st.text_input("Nome Fantasia"); e = st.text_input("E-mail"); d = st.text_input("CNPJ/CPF"); a = st.selectbox("Adq", ["InfinitePay", "PicPay"])
                 if st.form_submit_button("Salvar"):
-                    conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
+                    conn.table("estabelecimentos").upsert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "cnpj_cpf": d, "adquirente": a, "senha": "12345"}, on_conflict="nome_fantasia").execute()
                     st.success("OK!"); st.rerun()
         with t1:
             res_e = conn.table("estabelecimentos").select("*").execute()
@@ -91,12 +92,12 @@ else:
                     conn.table("maquinas_ns").delete().eq("nome_lojista", del_n).execute(); st.rerun()
 
     elif menu == "📂 Planos":
-        st.title("📂 Planos de Taxas")
-        tv, tn = st.tabs(["📋 Meus Planos", "➕ Criar Novo"])
+        st.title("📂 Planos")
+        tv, tn = st.tabs(["📋 Meus Planos", "➕ Novo"])
         with tv:
             res_p = conn.table("planos_mj").select("*").execute()
             if res_p.data:
-                ps = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
+                ps = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
                 id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
@@ -115,25 +116,18 @@ else:
                 conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
 
     elif menu == "👤 Vincular":
-        st.title("👤 Vínculo de Máquinas")
-        t_vin, t_con = st.tabs(["🔗 Novo Vínculo", "📋 Máquinas Vinculadas"])
-        with t_vin:
-            res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
-            res_p = conn.table("planos_mj").select("nome_plano").execute()
-            if res_e.data and res_p.data:
-                with st.form("vin"):
-                    c = st.selectbox("Cliente", sorted([e['nome_fantasia'] for e in res_e.data])); ns = st.text_input("Código NS ou Terminal"); pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]))
-                    if st.form_submit_button("Finalizar Vínculo"):
-                        for n in [x.strip().upper() for x in ns.split(",")]:
-                            # Remove zeros à esquerda para o vínculo ser universal
-                            n_limpo = n.lstrip('0')
-                            conn.table("maquinas_ns").upsert({"ns": n_limpo, "nome_lojista": c, "nome_plano": pl}).execute()
-                        st.success("Vínculo realizado!"); st.rerun()
-        with t_con:
-            res_m = conn.table("maquinas_ns").select("*").execute()
-            if res_m.data: st.dataframe(pd.DataFrame(res_m.data)[['ns', 'nome_lojista', 'nome_plano']], use_container_width=True, hide_index=True)
+        st.title("👤 Vincular")
+        res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
+        res_p = conn.table("planos_mj").select("nome_plano").execute()
+        if res_e.data and res_p.data:
+            with st.form("vin"):
+                c = st.selectbox("Cliente", sorted([e['nome_fantasia'] for e in res_e.data])); ns = st.text_input("NS"); pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]))
+                if st.form_submit_button("Vincular"):
+                    for n in [x.strip().upper().lstrip('0') for x in ns.split(",")]:
+                        conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
+                    st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v91.0 - RESGATE TOTAL) ---
+    # --- 🏠 DASHBOARD (v92.0 - CORREÇÃO DE COLUNA BANDEIRA) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -145,11 +139,11 @@ else:
             if v_raw:
                 df_v = pd.DataFrame(v_raw); df_m = pd.DataFrame(m_raw); df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'}); df_t = pd.DataFrame(t_raw)
                 
-                # NORMALIZAÇÃO DE CHAVES (Remove zeros e espaços para bater 100%)
+                # Normalização de Chaves
                 df_v['link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().lstrip('0') if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper()[:13], axis=1)
                 df_m['ns_short'] = df_m['ns'].astype(str).str.strip().str.lstrip('0').str.upper().str[:13]
                 
-                # MUDANÇA VITAL: LEFT JOIN (Para as vendas NÃO sumirem se não estiverem vinculadas)
+                # Merge Vendas + Maquinas
                 df = pd.merge(df_v, df_m, left_on='link_key', right_on='ns_short', how='left')
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 
@@ -158,24 +152,21 @@ else:
                 for c in ['bandeira', 'meio']: df_t[c] = df_t[c].astype(str).str.strip().str.lower()
                 df['bandeira_ajustada'] = df['bandeira'].astype(str).str.strip().str.lower()
                 
-                df = pd.merge(df, df_t, left_on=['id_p', 'bandeira_ajustada', 'plano_ajustado'], right_on=['id_plano', 'bandeira', 'meio'], how='left')
+                # Merge com Taxas (Removendo duplicidade de nome da coluna bandeira)
+                df = pd.merge(df, df_t.drop(columns=['bandeira'], errors='ignore'), left_on=['id_p', 'bandeira_ajustada', 'plano_ajustado'], right_on=['id_plano', 'bandeira', 'meio'], how='left')
                 
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro); df = df.dropna(subset=['data_dt'])
-                
-                # Lojista Final: Se não vinculado, mostra o código da máquina
                 df['lojista_final'] = df.apply(lambda x: x['nome_lojista'] if pd.notnull(x['nome_lojista']) else f"⚠️ NÃO VINCULADO ({x['link_key']})", axis=1)
 
                 # Filtros
                 st.sidebar.subheader("Filtros")
                 l_filt = sorted(df['lojista_final'].unique())
                 if st.session_state.perfil == "admin":
-                    # POR PADRÃO: Seleciona TUDO (incluindo os não vinculados) para o bruto bater
-                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=l_filt)
-                    df = df[df['lojista_final'].isin(esc)]
+                    esc = st.sidebar.multiselect("Lojistas:", l_filt, default=l_filt); df = df[df['lojista_final'].isin(esc)]
                 else: df = df[df['lojista_final'] == st.session_state.usuario]
 
                 d_ini = st.sidebar.date_input("Início", date(2026, 4, 1)); d_fim = st.sidebar.date_input("Fim", datetime.now().date())
-                df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
+                df = df[(df.apply(lambda x: x['data_dt'].date(), axis=1) >= d_ini) & (df.apply(lambda x: x['data_dt'].date(), axis=1) <= d_fim)]
 
                 if not df.empty:
                     df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0).round(2)
@@ -193,9 +184,22 @@ else:
                         df['lucro_real'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                         c4.metric("Lucro Real", f"R$ {df['lucro_real'].sum():,.2f}")
 
-                    st.write("---")
-                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq', 'link_key']].sort_index(ascending=False), use_container_width=True)
-            else: st.info("Sincronizando...")
-        except Exception as e: st.error(f"Erro: {e}")
+                    st.divider()
+                    g1, g2 = st.columns(2)
+                    with g1: 
+                        st.subheader("📈 Diário")
+                        if not df.empty: st.line_chart(df.groupby(df['data_dt'].dt.date)['bruto_v'].sum())
+                    with g2: 
+                        st.subheader("💳 Bandeiras")
+                        if not df.empty: st.bar_chart(df.groupby('bandeira')['bruto_v'].sum())
+                    
+                    if st.button("📄 Gerar PDF"):
+                        pdf_b = gerar_pdf(df, df['bruto_v'].sum(), df['liq'].sum())
+                        st.download_button("📥 Baixar PDF", pdf_b, "relatorio.pdf", "application/pdf")
 
-st.sidebar.caption("MJ Soluções v91.0")
+                    st.dataframe(df[['data_venda', 'lojista_final', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
+                else: st.warning("Sem dados.")
+            else: st.info("Sincronizando...")
+        except Exception as e: st.error(f"Erro no Dashboard: {e}")
+
+st.sidebar.caption("MJ Soluções v92.0")
