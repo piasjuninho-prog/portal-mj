@@ -12,6 +12,7 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
+# Listas de ordenação
 ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
@@ -43,7 +44,7 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN
+    # ABAS ADMIN (ESTÁVEIS)
     if menu == "🏫 Gestão":
         res_e = conn.table("estabelecimentos").select("*").execute()
         if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
@@ -61,10 +62,10 @@ else:
         with st.form("vin"):
             c, ns, pl = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data]), st.text_input("Código"), st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
             if st.form_submit_button("Vincular"):
-                for n in [x.strip().upper().lstrip('0') for x in ns.split(",")]: conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
+                for n in [x.strip().upper() for x in ns.split(",")]: conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v102.0 - SUPER BUSCA DE VÍNCULO) ---
+    # --- 🏠 DASHBOARD (v103.0 - MERGE LIMPO E SEGURO) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
@@ -77,29 +78,22 @@ else:
                 df_v = pd.DataFrame(v_raw).drop_duplicates(subset=['ns'], keep='first')
                 df_m = pd.DataFrame(m_raw) if m_raw else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 
-                # --- LÓGICA DE VÍNCULO ULTRA-FLEXÍVEL ---
-                # Criamos 2 chaves de tentativa: o Terminal e o NS curto
-                df_v['key_terminal'] = df_v['terminal'].astype(str).str.strip().str.lstrip('0')
-                df_v['key_ns'] = df_v['ns'].astype(str).str.strip().str.upper().str[:13]
+                # 1. Cria a chave de link única (Terminal para PicPay, NS para Infinite)
+                df_v['final_link_key'] = df_v.apply(lambda x: str(x.get('terminal', '')).strip().upper() if str(x.get('adquirente','')).lower() == 'picpay' else str(x.get('ns','')).strip().upper()[:13], axis=1)
+                df_m['m_ns_key'] = df_m['ns'].astype(str).str.strip().str.upper().str[:13]
+
+                # 2. Merge único com a tabela de máquinas
+                df = pd.merge(df_v, df_m, left_on='final_link_key', right_on='m_ns_key', how='left')
                 
-                df_m['m_ns_clean'] = df_m['ns'].astype(str).str.strip().str.lstrip('0').str.upper().str[:13]
-
-                # Tentativa 1: Casar pelo Terminal (PicPay)
-                df = pd.merge(df_v, df_m, left_on='key_terminal', right_on='m_ns_clean', how='left')
+                # 3. Lojista e Planos
+                df['lojista_final'] = df['nome_lojista'].fillna(f"⚠️ NÃO VINCULADO ({df['final_link_key']})")
                 
-                # Tentativa 2: Se falhou o terminal, tenta pelo NS (InfinitePay)
-                df['nome_lojista'] = df['nome_lojista'].fillna(pd.merge(df_v, df_m, left_on='key_ns', right_on='m_ns_clean', how='left')['nome_lojista'])
-                df['nome_plano'] = df['nome_plano'].fillna(pd.merge(df_v, df_v, on='id', how='left').merge(df_m, left_on='key_ns', right_on='m_ns_clean', how='left')['nome_plano'])
-
-                # Identificação Final
-                df['lojista_final'] = df['nome_lojista'].fillna(f"⚠️ NÃO VINCULADO ({df['key_terminal']})")
-
-                # Merge Taxas
                 df_p = pd.DataFrame(p_raw).rename(columns={'id': 'id_p'}); df_t = pd.DataFrame(t_raw)
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
-                df['pl_adj'] = df['plano'].astype(str).str.strip().str.lower().replace('crédito', 'à vista')
+                
+                df['plano_adj'] = df['plano'].astype(str).str.strip().str.lower().replace('crédito', 'à vista')
                 df_t_clean = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio'], keep='last').rename(columns={'bandeira': 'band_p', 'meio': 'meio_p'})
-                df = pd.merge(df, df_t_clean, left_on=['id_p', 'bandeira', 'pl_adj'], right_on=['id_plano', 'band_p', 'meio_p'], how='left')
+                df = pd.merge(df, df_t_clean, left_on=['id_p', 'bandeira', 'plano_adj'], right_on=['id_plano', 'band_p', 'meio_p'], how='left')
                 
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro); df = df.dropna(subset=['data_dt'])
 
@@ -113,7 +107,6 @@ else:
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
                 if not df.empty:
-                    # CORREÇÃO DA TABELA VAZIA
                     df['bruto_val'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0.0)
                     df['liq_final'] = (df['bruto_val'] * (1 - df['t_cli'])).round(2)
@@ -129,4 +122,4 @@ else:
             else: st.info("Sincronizando...")
         except Exception as e: st.error(f"Erro no Dashboard: {e}")
 
-st.sidebar.caption("MJ Soluções v102.0")
+st.sidebar.caption("MJ Soluções v103.0")
