@@ -28,7 +28,7 @@ def converter_data_seguro(data_str):
         return pd.to_datetime(d, format='%d %m %Y', errors='coerce')
     except: return None
 
-# --- FUNÇÃO DO PDF (LIMPA: SEM SPREAD) ---
+# --- FUNÇÃO DO PDF ---
 def gerar_pdf_cliente(df, total_bruto, total_liquido):
     pdf = FPDF()
     pdf.add_page()
@@ -70,10 +70,14 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", opcoes)
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # ABAS ADMIN (MANTIDAS)
+    # --- ABA GESTÃO ---
     if menu == "🏫 Gestão":
+        st.title("🏫 Gestão de Estabelecimentos")
         res_e = conn.table("estabelecimentos").select("*").execute()
-        if res_e.data: st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
+        if res_e.data: 
+            st.data_editor(pd.DataFrame(res_e.data), use_container_width=True, hide_index=True)
+
+    # --- ABA PLANOS ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         tv, tn = st.tabs(["📋 Meus Planos", "➕ Novo"])
@@ -94,15 +98,29 @@ else:
                 id_p = res.data[0]['id']
                 batch = [{"id_plano": id_p, "bandeira": band_s, "meio": r['Modalidade'], "taxa_decimal": r['Taxa Cliente (%)']/100, "custo_decimal": r['Custo (%)']/100} for _, r in df_ed.iterrows()]
                 conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!")
-    elif menu == "👤 Vincular":
-        res_e, res_p = conn.table("estabelecimentos").select("nome_fantasia").execute(), conn.table("planos_mj").select("nome_plano").execute()
-        with st.form("vin"):
-            c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data]); ns = st.text_input("NS"); pl = st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
-            if st.form_submit_button("Vincular"):
-                for n in [x.strip().upper().lstrip('0') for x in ns.split(",")]: conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
-                st.success("OK!")
 
-    # --- 🏠 DASHBOARD (v128.0 - FINANCEIRO COMPLETO) ---
+    # --- ABA VINCULAR (ATUALIZADA) ---
+    elif menu == "👤 Vincular":
+        st.title("👤 Vincular Máquina ao Cliente")
+        res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
+        res_p = conn.table("planos_mj").select("nome_plano").execute()
+        
+        with st.form("vin"):
+            c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
+            ns = st.text_input("NS (Número de Série da Máquina)")
+            pl = st.selectbox("Plano de Taxas Ativo", [p['nome_plano'] for p in res_p.data])
+            
+            if st.form_submit_button("Vincular"):
+                # 1. Salva o vínculo na tabela de máquinas
+                for n in [x.strip().upper().lstrip('0') for x in ns.split(",")]: 
+                    conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
+                
+                # 2. Atualiza a ficha do cliente para o Dashboard e Gestão reconhecerem o plano
+                conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
+                
+                st.success(f"✅ Vínculo concluído! O cliente {c} agora utiliza o plano {pl}.")
+
+    # --- 🏠 DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=30000, key="refresh")
         try:
