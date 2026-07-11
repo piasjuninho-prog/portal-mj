@@ -14,6 +14,9 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
+ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
+ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
+
 # --- FUNÇÕES ---
 def limpar_ns(val):
     if val is None or pd.isna(val): return ""
@@ -22,8 +25,7 @@ def limpar_ns(val):
 def converter_data_seguro(data_str):
     try:
         if not data_str: return None
-        # FORÇA O PADRÃO BRASILEIRO (DIA PRIMEIRO)
-        return pd.to_datetime(data_str, dayfirst=True, errors='coerce')
+        return pd.to_datetime(data_str, errors='coerce')
     except: return None
 
 # --- LOGIN ---
@@ -43,13 +45,23 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABA GESTÃO ---
+    # ABAS GESTÃO, PLANOS E VINCULAR
     if menu == "🏫 Gestão":
         st.subheader("🏫 Gestão de Clientes")
         res = conn.table("estabelecimentos").select("*").execute()
         st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
-    # --- ABA VINCULAR ---
+    elif menu == "📂 Planos":
+        st.title("📂 Planos de Taxas")
+        res_p = conn.table("planos_mj").select("*").execute()
+        if res_p.data:
+            ps = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
+            id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
+            res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+            if res_t.data:
+                df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+
     elif menu == "👤 Vincular":
         st.subheader("👤 Vincular Máquina")
         res_e, res_p = conn.table("estabelecimentos").select("nome_fantasia").execute(), conn.table("planos_mj").select("nome_plano").execute()
@@ -64,40 +76,41 @@ else:
 
     # --- 🏠 DASHBOARD ---
     elif menu == "🏠 Dashboard":
-        st_autorefresh(interval=60000, key="refresh_dash")
+        st_autorefresh(interval=60000, key="refresh")
         st.title("📊 Dashboard")
         
-        # 1. Filtros Iniciais na Sidebar
-        st.sidebar.subheader("Filtros")
+        # 1. Busca Todos os Clientes Cadastrados (Independente de venda)
         res_est = conn.table("estabelecimentos").select("nome_fantasia").execute()
         todos_lojistas = sorted([e['nome_fantasia'] for e in res_est.data])
-        
-        if st.session_state.perfil == "admin":
-            esc_lojistas = st.sidebar.multiselect("Lojistas:", todos_lojistas, default=todos_lojistas)
-        else:
-            esc_lojistas = [st.session_state.usuario]
 
-        d_ini = st.sidebar.date_input("Início", date.today())
-        d_fim = st.sidebar.date_input("Fim", date.today())
-
-        # 2. Busca Dados
+        # 2. Busca Dados para Cruzamento
         v_res = conn.table("vendas").select("*").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
         p_res = conn.table("planos_mj").select("id, nome_plano").execute()
         t_res = conn.table("taxas_dos_planos").select("*").execute()
 
+        # 3. FILTROS NA SIDEBAR (Sempre visíveis com todos os nomes)
+        st.sidebar.subheader("Filtros")
+        if st.session_state.perfil == "admin":
+            esc_lojistas = st.sidebar.multiselect("Lojistas:", todos_lojistas, default=todos_lojistas)
+        else:
+            esc_lojistas = [st.session_state.usuario]
+
+        d_ini = st.sidebar.date_input("Início", date(2026, 6, 1))
+        d_fim = st.sidebar.date_input("Fim", date.today())
+
         if v_res.data and m_res.data:
-            df_v = pd.DataFrame(v_res.data)
+            df_v = pd.DataFrame(v_res.data).drop_duplicates(subset=['id'])
             df_m = pd.DataFrame(m_res.data)
             df_p = pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
             df_t = pd.DataFrame(t_res.data)
 
-            # Link de NS Limpo
+            # Link de NS
             df_v['ns_link'] = df_v.apply(lambda x: limpar_ns(x.get('terminal')) if limpar_ns(x.get('terminal')) != "" else limpar_ns(x.get('ns')), axis=1)
-            df_m['ns_link'] = df_m['ns'].apply(limpar_ns)
+            df_m['ns_short'] = df_m['ns'].apply(limpar_ns)
 
             # Merge
-            df = pd.merge(df_v, df_m, on='ns_link', how='inner')
+            df = pd.merge(df_v, df_m, left_on='ns_link', right_on='ns_short', how='inner')
             df = pd.merge(df, df_p, on='nome_plano', how='left')
 
             if not df.empty:
@@ -106,11 +119,10 @@ else:
                 df_t_c = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
                 
-                # Conversão de Data Corrigida (Brasil)
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro)
                 df = df.dropna(subset=['data_dt'])
 
-                # Aplicação dos Filtros
+                # Aplica Filtros de Lojista e Data no DF final
                 df = df[df['nome_lojista'].isin(esc_lojistas)]
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
 
@@ -122,15 +134,12 @@ else:
 
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
-                    c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
+                    c2.metric("Líquido a Receber", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
                     st.divider()
                     st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
-                else:
-                    st.warning("Nenhuma venda encontrada para esta data/lojista.")
-            else:
-                st.error("⚠️ As vendas estão no banco, mas não foram vinculadas a nenhum lojista. Verifique os Números de Série.")
-        else:
-            st.info("Aguardando sincronização de dados...")
+                else: st.warning("Nenhuma venda encontrada para os filtros selecionados.")
+            else: st.error("⚠️ Erro de Vínculo: As vendas existem no banco, mas não coincidem com os números de série (NS) cadastrados.")
+        else: st.info("Sincronize as vendas para ver os dados.")
 
-st.sidebar.caption("MJ Soluções v135.0")
+st.sidebar.caption("MJ Soluções v134.0")
