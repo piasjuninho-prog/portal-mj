@@ -1,5 +1,6 @@
-pandas
 streamlit
+pandas
 st-supabase-connection
+fpdf
 streamlit-autorefresh
-fpdf2
+numpy
