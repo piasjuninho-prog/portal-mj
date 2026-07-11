@@ -14,36 +14,20 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# Listas de ordenação fixa
 ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
-# --- FUNÇÕES ---
+# --- FUNÇÕES DE LIMPEZA ---
+def limpar_ns(val):
+    if val is None or pd.isna(val): return ""
+    # Remove espaços, zeros à esquerda e converte para string pura
+    return str(val).strip().upper().lstrip('0')
+
 def converter_data_seguro(data_str):
     try:
         if not data_str: return None
-        return pd.to_datetime(data_str, errors='coerce', dayfirst=True)
+        return pd.to_datetime(data_str, errors='coerce')
     except: return None
-
-def gerar_pdf_cliente(df, total_bruto, total_liquido):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", "B", 16)
-    pdf.cell(190, 15, "Relatorio de Vendas - MJ Solucoes", ln=True, align="C")
-    pdf.set_font("helvetica", "", 12)
-    pdf.cell(95, 10, f"Bruto Total: R$ {total_bruto:,.2f}", 1, align="C")
-    pdf.cell(95, 10, f"Liquido Total: R$ {total_liquido:,.2f}", 1, ln=True, align="C")
-    pdf.ln(10)
-    pdf.set_font("helvetica", "B", 9)
-    pdf.cell(30, 8, "Data", 1); pdf.cell(40, 8, "Bandeira", 1); pdf.cell(30, 8, "Plano", 1); pdf.cell(30, 8, "Taxa %", 1); pdf.cell(60, 8, "Liquido", 1, ln=True)
-    pdf.set_font("helvetica", "", 8)
-    for _, r in df.iterrows():
-        pdf.cell(30, 8, str(r['data_venda'])[:10], 1)
-        pdf.cell(40, 8, str(r['bandeira']), 1)
-        pdf.cell(30, 8, str(r['plano']), 1)
-        pdf.cell(30, 8, str(r['taxa_txt']), 1)
-        pdf.cell(60, 8, f"R$ {float(r['liq']):,.2f}", 1, ln=True)
-    return bytes(pdf.output())
 
 # --- LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
@@ -63,8 +47,13 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABA PLANOS ---
-    if menu == "📂 Planos":
+    # ABAS GESTÃO, PLANOS E VINCULAR (MANTIDAS)
+    if menu == "🏫 Gestão":
+        st.subheader("🏫 Gestão de Clientes")
+        res = conn.table("estabelecimentos").select("*").execute()
+        st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
+
+    elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute()
         if res_p.data:
@@ -72,16 +61,10 @@ else:
             id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
             res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
             if res_t.data:
-                df_piv = pd.pivot_table(pd.DataFrame(res_t.data), values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                df_t_exibir = pd.DataFrame(res_t.data)
+                df_piv = pd.pivot_table(df_t_exibir, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                 st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
 
-    # --- ABA GESTÃO ---
-    elif menu == "🏫 Gestão":
-        st.subheader("🏫 Gestão de Clientes")
-        res = conn.table("estabelecimentos").select("*").execute()
-        st.data_editor(pd.DataFrame(res.data), use_container_width=True)
-
-    # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
         st.subheader("👤 Vincular Máquina")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
@@ -96,30 +79,33 @@ else:
                 conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
                 st.success("Vinculado!")
 
-    # --- 🏠 DASHBOARD (VERSÃO COMPLETA) ---
+    # --- 🏠 DASHBOARD (MELHORADO) ---
     elif menu == "🏠 Dashboard":
-        st_autorefresh(interval=60000, key="dashboard_auto_refresh")
+        st_autorefresh(interval=60000, key="dash_ref")
         st.title("📊 Dashboard")
         
-        try:
-            v_res = conn.table("vendas").select("*").execute()
-            m_res = conn.table("maquinas_ns").select("*").execute()
-            p_res = conn.table("planos_mj").select("id, nome_plano").execute()
-            t_res = conn.table("taxas_dos_planos").select("*").execute()
-            
-            if v_res.data and m_res.data:
-                df_v = pd.DataFrame(v_res.data).drop_duplicates(subset=['id'])
-                df_m = pd.DataFrame(m_res.data)
-                df_p = pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
-                df_t = pd.DataFrame(t_res.data)
-                
-                # Normalização de NS
-                df_v['ns_link'] = df_v.apply(lambda x: str(x.get('terminal','')).strip() if 'PAGBANK' in str(x.get('adquirente','')).upper() else str(x.get('ns','')).strip(), axis=1)
-                df_m['ns_link'] = df_m['ns'].astype(str).str.strip()
-                
-                df = pd.merge(df_v, df_m, on='ns_link', how='inner')
-                df = pd.merge(df, df_p, on='nome_plano', how='left')
-                
+        # 1. Busca Dados Brutos
+        v_res = conn.table("vendas").select("*").execute()
+        m_res = conn.table("maquinas_ns").select("*").execute()
+        p_res = conn.table("planos_mj").select("id, nome_plano").execute()
+        t_res = conn.table("taxas_dos_planos").select("*").execute()
+
+        if v_res.data and m_res.data:
+            df_v = pd.DataFrame(v_res.data).drop_duplicates(subset=['id'])
+            df_m = pd.DataFrame(m_res.data)
+            df_p = pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
+            df_t = pd.DataFrame(t_res.data)
+
+            # 2. LIMPEZA PROFUNDA DOS NS PARA O LINK FUNCIONAR
+            # PagBank e PicPay costumam salvar o NS na coluna 'terminal' ou 'ns'
+            df_v['ns_link'] = df_v.apply(lambda x: limpar_ns(x.get('terminal')) if limpar_ns(x.get('terminal')) != "" else limpar_ns(x.get('ns')), axis=1)
+            df_m['ns_link'] = df_m['ns'].apply(limpar_ns)
+
+            # 3. MERGE (Cruzamento de Vendas com Lojistas)
+            df = pd.merge(df_v, df_m, on='ns_link', how='inner')
+            df = pd.merge(df, df_p, on='nome_plano', how='left')
+
+            if not df.empty:
                 # Join de Taxas
                 df['pl_adj'] = df['plano'].astype(str).str.strip().str.lower().replace('crédito', 'à vista')
                 df_t_c = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
@@ -128,45 +114,41 @@ else:
                 df['data_dt'] = df['data_venda'].apply(converter_data_seguro)
                 df = df.dropna(subset=['data_dt'])
 
-                # FILTROS LATERAIS
+                # 4. FILTROS NA SIDEBAR
                 st.sidebar.subheader("Filtros")
+                opcoes_lojistas = sorted(df['nome_lojista'].unique())
+                
                 if st.session_state.perfil == "admin":
-                    clientes = sorted(df['nome_lojista'].unique())
-                    esc = st.sidebar.multiselect("Lojistas:", clientes, default=clientes)
-                    df = df[df['nome_lojista'].isin(esc)]
+                    # Define todos como padrão para não começar vazio com erro
+                    esc_lojistas = st.sidebar.multiselect("Lojistas:", opcoes_lojistas, default=opcoes_lojistas)
+                    df = df[df['nome_lojista'].isin(esc_lojistas)]
                 else:
                     df = df[df['nome_lojista'] == st.session_state.usuario]
 
                 d_ini = st.sidebar.date_input("Início", date(2026, 6, 1))
                 d_fim = st.sidebar.date_input("Fim", date.today())
                 df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
-                
+
+                # 5. CÁLCULOS FINAIS
                 if not df.empty:
                     df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
                     df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0.0)
-                    df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0.0), errors='coerce').fillna(0.0)
-                    
                     df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
-                    df['lucro_val'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                     df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
                     # KPIs
-                    c1, c2, c3, c4 = st.columns(4)
+                    c1, c2, c3 = st.columns(3)
                     c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
                     c2.metric("Líquido a Receber", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
-                    if st.session_state.perfil == "admin": 
-                        c4.metric("Lucro Real", f"R$ {df['lucro_val'].sum():,.2f}")
 
                     st.divider()
-                    if st.button("📄 Gerar PDF"):
-                        pdf_bytes = gerar_pdf_cliente(df, df['bruto_v'].sum(), df['liq'].sum())
-                        st.download_button("Baixar PDF", pdf_bytes, "relatorio.pdf")
-                    
                     st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
                 else:
-                    st.info("Nenhuma venda encontrada para os filtros.")
-        except Exception as e:
-            st.warning(f"Aguardando configuração de taxas para alguns planos. Erro: {e}")
+                    st.warning("Nenhuma venda para o período/lojista selecionado.")
+            else:
+                st.error("⚠️ Erro de Vínculo: As vendas existem no banco, mas os números de série (NS) não batem com o que foi cadastrado na aba 'Vincular'. Verifique se os NS estão corretos.")
+        else:
+            st.info("Aguardando carregamento de dados do Supabase...")
 
-st.sidebar.caption("MJ Soluções v132.0")
+st.sidebar.caption("MJ Soluções v133.0")
