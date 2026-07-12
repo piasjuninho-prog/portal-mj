@@ -12,11 +12,7 @@ st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sideba
 SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 
-try:
-    conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
-except:
-    st.error("Erro de conexão com o banco de dados.")
-    st.stop()
+conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
 # --- FUNÇÕES ---
 def limpar_ns(val):
@@ -46,13 +42,12 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "🏫 Gestão", "📂 Planos", "👤 Vincular", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABA GESTÃO ---
+    # ABAS GESTÃO E VINCULAR
     if menu == "🏫 Gestão":
         st.subheader("🏫 Gestão de Clientes")
         res = conn.table("estabelecimentos").select("*").execute()
         st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
-    # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
         st.subheader("👤 Vincular Máquina")
         res_e, res_p = conn.table("estabelecimentos").select("nome_fantasia").execute(), conn.table("planos_mj").select("nome_plano").execute()
@@ -60,64 +55,64 @@ else:
             c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
             ns, pl = st.text_input("NS"), st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
             if st.form_submit_button("Vincular"):
-                for n in [x.strip().upper() for x in ns.split(",")]:
+                for n in [limpar_ns(x) for x in ns.split(",") if x.strip() != ""]:
                     conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
                 conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
-                st.success("Vinculado!")
+                st.success("✅ Vinculado com sucesso!")
 
-    # --- 🏠 DASHBOARD ---
+    # --- 🏠 DASHBOARD (COM ALERTA DE NS) ---
     elif menu == "🏠 Dashboard":
-        st_autorefresh(interval=60000, key="refresh_dash")
+        st_autorefresh(interval=60000, key="ref_dash")
         st.title("📊 Dashboard Financeiro")
         
-        # 1. Busca Lojistas para o Filtro
-        res_est = conn.table("estabelecimentos").select("nome_fantasia").execute()
-        todos_lojistas = sorted([e['nome_fantasia'] for e in res_est.data])
-
-        # 2. Sidebar Filtros
+        # Filtros
         st.sidebar.subheader("Filtros")
-        if st.session_state.perfil == "admin":
-            esc_lojistas = st.sidebar.multiselect("Lojistas:", todos_lojistas, default=todos_lojistas)
-        else:
-            esc_lojistas = [st.session_state.usuario]
+        d_ini = st.sidebar.date_input("Início", date(2026, 7, 10))
+        d_fim = st.sidebar.date_input("Fim", date(2026, 7, 10))
 
-        # Ajuste padrão para 2026 (facilitando seus testes)
-        d_ini = st.sidebar.date_input("Início", date(2026, 7, 1))
-        d_fim = st.sidebar.date_input("Fim", date(2026, 7, 30))
-
-        # 3. Busca Dados
+        # Busca Dados
         v_res = conn.table("vendas").select("*").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
-        p_res = conn.table("planos_mj").select("id, nome_plano").execute()
         t_res = conn.table("taxas_dos_planos").select("*").execute()
+        p_res = conn.table("planos_mj").select("id, nome_plano").execute()
 
         if v_res.data and m_res.data:
-            df_v = pd.DataFrame(v_res.data).drop_duplicates(subset=['id'])
+            df_v = pd.DataFrame(v_res.data)
             df_m = pd.DataFrame(m_res.data)
-            df_p = pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
             df_t = pd.DataFrame(t_res.data)
+            df_p = pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
+
+            # Normaliza Datas
+            df_v['data_dt'] = df_v['data_venda'].apply(converter_data_seguro)
+            df_v = df_v.dropna(subset=['data_dt'])
+            
+            # Filtra por data antes de cruzar (para saber se há vendas hoje)
+            df_v_hoje = df_v[(df_v['data_dt'].dt.date >= d_ini) & (df_v['data_dt'].dt.date <= d_fim)].copy()
 
             # Link de NS
-            df_v['ns_link'] = df_v.apply(lambda x: limpar_ns(x.get('terminal')) if limpar_ns(x.get('terminal')) != "" else limpar_ns(x.get('ns')), axis=1)
+            df_v_hoje['ns_link'] = df_v_hoje.apply(lambda x: limpar_ns(x.get('terminal')) if limpar_ns(x.get('terminal')) != "" else limpar_ns(x.get('ns')), axis=1)
             df_m['ns_link'] = df_m['ns'].apply(limpar_ns)
 
-            # Cruzamento de Dados
-            df = pd.merge(df_v, df_m, on='ns_link', how='inner')
-            df = pd.merge(df, df_p, on='nome_plano', how='left')
+            # Cruzamento (Inner Join)
+            df = pd.merge(df_v_hoje, df_m, on='ns_link', how='inner')
+
+            # --- VERIFICAÇÃO DE VENDAS PERDIDAS ---
+            ns_venda = set(df_v_hoje['ns_link'].unique())
+            ns_vinculado = set(df_m['ns_link'].unique())
+            ns_faltando = ns_venda - ns_vinculado
+
+            if ns_faltando and st.session_state.perfil == "admin":
+                st.warning(f"⚠️ Existem vendas hoje para os seguintes NS que não estão vinculados: {', '.join(ns_faltando)}")
+                st.info("Vá na aba 'Vincular' e adicione esses números para o cliente correto.")
 
             if not df.empty:
-                # Join de Taxas
+                df = pd.merge(df, df_p, on='nome_plano', how='left')
                 df['pl_adj'] = df['plano'].astype(str).str.strip().str.lower().replace('crédito', 'à vista')
                 df_t_c = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
                 
-                # Tratamento de Data Brasileira
-                df['data_dt'] = df['data_venda'].apply(converter_data_seguro)
-                df = df.dropna(subset=['data_dt'])
-
-                # Aplicação dos Filtros selecionados na Sidebar
-                df = df[df['nome_lojista'].isin(esc_lojistas)]
-                df = df[(df['data_dt'].dt.date >= d_ini) & (df['data_dt'].dt.date <= d_fim)]
+                if st.session_state.perfil != "admin":
+                    df = df[df['nome_lojista'] == st.session_state.usuario]
 
                 if not df.empty:
                     df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0.0)
@@ -129,13 +124,10 @@ else:
                     c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
                     c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
                     c3.metric("Vendas", len(df))
-                    st.divider()
                     st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']].sort_index(ascending=False), use_container_width=True)
-                else:
-                    st.warning("Nenhuma venda encontrada para o período/lojista selecionado.")
             else:
-                st.error("⚠️ As vendas no banco não coincidem com os números de série vinculados.")
+                if not ns_faltando: st.info("Nenhuma venda encontrada para esta data.")
         else:
-            st.info("Aguardando dados de vendas...")
+            st.info("Aguardando dados...")
 
-st.sidebar.caption("MJ Soluções v137.0")
+st.sidebar.caption("MJ Soluções v138.0")
