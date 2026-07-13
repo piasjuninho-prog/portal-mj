@@ -10,43 +10,33 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-if 'perfil' not in st.session_state: st.session_state.perfil = None
-if st.session_state.perfil is None:
-    st.title("🔐 Portal MJ")
-    u, p = st.text_input("Usuário").lower().strip(), st.text_input("Senha", type="password")
-    if st.button("Entrar"):
-        if u == "admin" and p == "mj123":
-            st.session_state.perfil = "admin"; st.rerun()
-else:
-    menu = st.sidebar.radio("Menu", ["Dashboard", "Sair"])
-    if menu == "Sair": st.session_state.perfil = None; st.rerun()
+st.title("📊 Portal MJ - Modo Raio-X")
 
-    if menu == "Dashboard":
-        st.title("📊 Dashboard MJ (Modo Transparente)")
-        d_sel = st.sidebar.date_input("Data da Venda", date(2026, 7, 11))
-        
-        # BUSCA TODAS AS VENDAS SEM FILTRO DE VÍNCULO
-        v_res = conn.table("vendas").select("*").execute()
-        m_res = conn.table("maquinas_ns").select("ns, nome_lojista").execute()
-        
-        if v_res.data:
-            df_v = pd.DataFrame(v_res.data)
-            df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista'])
-            
-            # Formata data para bater com o filtro
-            df_v['dt_limpa'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
-            df_v = df_v[df_v['dt_limpa'].dt.date == d_sel]
-            
-            if not df_v.empty:
-                # Cruza com os lojistas (LEFT JOIN para não sumir com venda não vinculada)
-                df = pd.merge(df_v, df_m, on='ns', how='left')
-                df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
-                df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
+# 1. TESTE DE CONEXÃO: MOSTRA O QUE TEM NO BANCO AGORA
+st.subheader("Últimas 5 vendas que chegaram no banco (Qualquer dia):")
+try:
+    raw = conn.table("vendas").select("*").order("id", desc=True).limit(5).execute()
+    if raw.data:
+        st.table(pd.DataFrame(raw.data)[['id', 'data_venda', 'bruto', 'adquirente', 'ns']])
+    else:
+        st.error("O banco de dados está TOTALMENTE VAZIO. O robô não está conseguindo salvar.")
+except Exception as e:
+    st.error(f"Erro ao ler banco: {e}")
 
-                st.metric("Total Bruto no Banco", f"R$ {df['bruto_v'].sum():,.2f}")
-                st.write(f"Encontradas {len(df)} vendas no banco para o dia {d_sel.strftime('%d/%m')}")
-                st.dataframe(df[['data_venda', 'nome_lojista', 'bruto_v', 'ns', 'adquirente']], use_container_width=True)
-            else:
-                st.info(f"O banco de dados está vazio para o dia {d_sel}. O Robô ainda não enviou os dados ou o SQL limpou a tabela.")
-        else:
-            st.warning("Não há nenhuma venda cadastrada em nenhum dia.")
+st.divider()
+
+# 2. DASHBOARD DO DIA
+d_sel = st.sidebar.date_input("Filtrar Data", date(2026, 7, 11))
+v_res = conn.table("vendas").select("*").execute()
+
+if v_res.data:
+    df = pd.DataFrame(v_res.data)
+    df['dt_obj'] = pd.to_datetime(df['data_venda'], dayfirst=True, errors='coerce')
+    df_hoje = df[df['dt_obj'].dt.date == d_sel]
+    
+    if not df_hoje.empty:
+        st.success(f"Sucesso! Encontramos {len(df_hoje)} vendas para o dia {d_sel}")
+        st.metric("Total Bruto", f"R$ {pd.to_numeric(df_hoje['bruto']).sum():,.2f}")
+        st.dataframe(df_hoje[['data_venda', 'bruto', 'ns', 'adquirente']], use_container_width=True)
+    else:
+        st.info("Nenhuma venda encontrada para o dia selecionado nos filtros.")
