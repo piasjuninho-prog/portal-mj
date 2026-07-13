@@ -40,67 +40,55 @@ else:
         st.subheader("👤 Vincular Máquina")
         res_e, res_p = conn.table("estabelecimentos").select("nome_fantasia").execute(), conn.table("planos_mj").select("nome_plano").execute()
         with st.form("vin"):
-            c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
-            ns = st.text_input("NS (Número de Série)")
-            pl = st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
+            c, ns, pl = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data]), st.text_input("NS"), st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
             if st.form_submit_button("Vincular"):
                 for n in [limpar_ns(x) for x in ns.split(",") if x.strip() != ""]:
                     conn.table("maquinas_ns").upsert({"ns": n, "nome_lojista": c, "nome_plano": pl}).execute()
-                conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
                 st.success("Vinculado!")
 
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=60000, key="refresh")
         st.title("📊 Dashboard MJ Financeiro")
-        d_sel = st.sidebar.date_input("Filtrar Data", date(2026, 7, 11))
+        d_sel = st.sidebar.date_input("Data do Filtro", date(2026, 7, 11))
 
-        # BUSCA DADOS
+        # BUSCA DADOS BRUTOS (Sem filtros iniciais para evitar erros)
         v_res = conn.table("vendas").select("*").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
-        t_res = conn.table("taxas_dos_planos").select("*").execute()
-        p_res = conn.table("planos_mj").select("id, nome_plano").execute()
+        
+        if v_res.data:
+            df_v = pd.DataFrame(v_res.data)
+            df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista'])
 
-        if v_res.data and m_res.data:
-            df_v, df_m = pd.DataFrame(v_res.data), pd.DataFrame(m_res.data)
-            df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id': 'id_p'})
+            # Limpeza de data e NS
+            df_v['dt_limpa'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
+            df_v['link'] = df_v['ns'].apply(limpar_ns)
+            df_m['link'] = df_m['ns'].apply(limpar_ns)
 
-            # Filtro Data
-            df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
-            df_v = df_v[df_v['dt'].dt.date == d_sel]
-            
-            # Link NS
-            df_v['ns_link'] = df_v['ns'].apply(limpar_ns)
-            df_m['ns_link'] = df_m['ns'].apply(limpar_ns)
+            # Filtra vendas pela data do Dashboard
+            vendas_do_dia = df_v[df_v['dt_limpa'].dt.date == d_sel].copy()
 
-            # Alerta de NS Não Vinculado
-            ns_venda = set(df_v['ns_link'].unique())
-            ns_vinculado = set(df_m['ns_link'].unique())
-            ns_faltando = [n for n in (ns_venda - ns_vinculado) if n != ""]
-            if ns_faltando and st.session_state.perfil == "admin":
-                st.warning(f"⚠️ Existem vendas para os seguintes NS não vinculados: {', '.join(ns_faltando)}")
-
-            # Cruzamento
-            df = pd.merge(df_v, df_m, on='ns_link', how='inner')
-
-            if not df.empty:
-                df = pd.merge(df, df_p, on='nome_plano', how='left')
-                df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito', 'à vista')
-                df_t_c = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
-                df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
-
+            if not vendas_do_dia.empty:
+                # Cruzamento LEFT JOIN (Para não sumir com nada do banco)
+                df = pd.merge(vendas_do_dia, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
+                df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
-                df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
-                df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0), errors='coerce').fillna(0)
-                df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
-                df['lucro_v'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
-                df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
-                if st.session_state.perfil != "admin":
-                    df = df[df['nome_lojista'] == st.session_state.usuario]
+                # Mostra aviso se houver algo não vinculado
+                if "⚠️ NÃO VINCULADO" in df['nome_lojista'].values:
+                    ns_soltos = df[df['nome_lojista'] == "⚠️ NÃO VINCULADO"]['link'].unique()
+                    st.warning(f"Existem {len(ns_soltos)} máquinas não vinculadas: {', '.join(ns_soltos)}")
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
-                c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
-                c3.metric("Vendas", len(df))
-                if st.session_state.perfil == "admin":
-                    c4.metric("Seu Lucro Real", f"R$ {df['lucro_v'].sum():,.2f}")
+                # KPIs
+                c1, c2 = st.columns(2)
+                c1.metric("Bruto Total (Dia)", f"R$ {df['bruto_v'].sum():,.2f}")
+                c2.metric("Qtd Vendas", len(df))
+
+                st.divider()
+                st.write("### Listagem de Vendas no Banco de Dados")
+                st.dataframe(df[['data_venda', 'nome_lojista', 'bruto', 'ns', 'adquirente']], use_container_width=True)
+            else:
+                st.info(f"O banco de dados não retornou vendas para o dia {d_sel}. Verifique se o robô sincronizou com sucesso.")
+        else:
+            st.error("O banco de dados de vendas está vazio.")
+
+st.sidebar.caption("MJ Soluções v148.0")
