@@ -15,14 +15,14 @@ conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=
 ORDEM_MODALIDADES = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard"]
 
-def limpar_ns(val): return str(val).strip().upper().lstrip('0') if val else ""
+def limpar(val): return str(val).strip().upper().lstrip('0') if val else ""
 
 # --- LOGIN ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if not st.session_state.auth:
     st.title("🔐 Login MJ PAG PRO")
-    u, p = st.text_input("Usuário").lower().strip(), st.text_input("Senha", type="password")
-    if st.button("Entrar", use_container_width=True):
+    u, p = st.text_input("Usuário").lower(), st.text_input("Senha", type="password")
+    if st.button("Entrar"):
         if u == "admin" and p == "mj123": st.session_state.auth = True; st.rerun()
         else: st.error("Acesso Negado")
 else:
@@ -41,35 +41,63 @@ else:
         res = conn.table("estabelecimentos").select("*").execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True)
 
-    # --- ABA PLANOS (FIX v155.0) ---
+    # --- ABA PLANOS (VERSÃO v157.0 - FIX VALUEERROR) ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
-        t1, t2 = st.tabs(["📋 Ver Planos", "➕ Criar/Editar"])
+        t1, t2 = st.tabs(["📋 Visualizar Planos", "➕ Criar/Editar Plano"])
+        
         with t1:
             res_p = conn.table("planos_mj").select("*").execute()
             if res_p.data:
-                ps = st.selectbox("Plano:", [p['nome_plano'] for p in res_p.data])
+                ps = st.selectbox("Selecione o Plano:", [p['nome_plano'] for p in res_p.data])
                 id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
                     df_t = pd.DataFrame(res_t.data)
                     df_piv = pd.pivot_table(df_t, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
                     st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+
         with t2:
-            nome_p = st.text_input("Nome do Plano (Ex: PAGBANK VIP)")
-            band_sel = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
-            df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*13, "Custo (%)": [0.0]*13}), use_container_width=True, hide_index=True)
+            st.subheader("Configurar Taxas")
+            nome_p_input = st.text_input("Nome do Plano (Ex: RAFHI IPHONE)")
+            band_sel = st.selectbox("Selecione a Bandeira:", ORDEM_BANDEIRAS)
+            
+            df_ed = st.data_editor(pd.DataFrame({
+                "Modalidade": ORDEM_MODALIDADES, 
+                "Taxa Cliente (%)": [0.0]*13, 
+                "Custo (%)": [0.0]*13
+            }), use_container_width=True, hide_index=True)
+            
             if st.button("💾 Salvar Bandeira no Plano"):
-                if nome_p:
-                    # 1. Upsert do Plano para garantir o ID
-                    p_res = conn.table("planos_mj").upsert({"nome_plano": nome_p.upper().strip()}, on_conflict="nome_plano").execute()
+                if not nome_p_input:
+                    st.error("Digite o nome do plano primeiro!")
+                else:
+                    # 1. Garante que o plano existe e pega o ID
+                    p_res = conn.table("planos_mj").upsert({"nome_plano": nome_p_input.upper().strip()}, on_conflict="nome_plano").execute()
                     id_p = p_res.data[0]['id']
-                    # 2. LIMPEZA SEGURA: Deleta taxas antigas dessa bandeira/plano antes de inserir novas
+                    
+                    # 2. Deleta taxas antigas para não dar erro de duplicidade
                     conn.table("taxas_dos_planos").delete().eq("id_plano", id_p).eq("bandeira", band_sel).execute()
-                    # 3. Inserção limpa
-                    batch = [{"id_plano": id_p, "bandeira": band_sel, "meio": r['Modalidade'], "taxa_decimal": float(r['Taxa Cliente (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
+                    
+                    # 3. Monta o lote de dados tratando valores vazios (None)
+                    batch = []
+                    for _, r in df_ed.iterrows():
+                        # Converte para float tratando vazios como 0.0
+                        t_cli = float(r['Taxa Cliente (%)']) if pd.notnull(r['Taxa Cliente (%)']) else 0.0
+                        t_cus = float(r['Custo (%)']) if pd.notnull(r['Custo (%)']) else 0.0
+                        
+                        batch.append({
+                            "id_plano": id_p,
+                            "bandeira": band_sel,
+                            "meio": r['Modalidade'],
+                            "taxa_decimal": t_cli / 100,
+                            "custo_decimal": t_cus / 100
+                        })
+                    
+                    # 4. Insere no banco
                     conn.table("taxas_dos_planos").insert(batch).execute()
-                    st.success("✅ Salvo com sucesso!"); st.balloons()
+                    st.success(f"✅ Taxas de {band_sel.upper()} salvas no plano {nome_p_input}!")
+                    st.balloons()
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -77,14 +105,14 @@ else:
         res_e, res_p = conn.table("estabelecimentos").select("nome_fantasia").execute(), conn.table("planos_mj").select("nome_plano").execute()
         with st.form("vinc"):
             c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
-            ns_txt = st.text_area("NS (Um por linha ou vírgula)")
+            ns_txt = st.text_area("NS (Números de Série - um por linha ou vírgula)")
             plano = st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
-            if st.form_submit_button("Vincular"):
+            if st.form_submit_button("Vincular Agora"):
                 import re
                 for n in re.split(r'[,\n\r]+', ns_txt):
-                    if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": plano}).execute()
+                    if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar(n), "nome_lojista": c, "nome_plano": plano}).execute()
                 conn.table("estabelecimentos").update({"nome_plano_ativo": plano}).eq("nome_fantasia", c).execute()
-                st.success("Vinculado!")
+                st.success("✅ Vínculos realizados!")
 
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
@@ -100,8 +128,7 @@ else:
             df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
             df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
             df_v = df_v[df_v['dt'].dt.date == d_sel]
-            df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
-            
+            df_v['link'], df_m['link'] = df_v['ns'].apply(limpar), df_m['ns'].apply(limpar)
             df = pd.merge(df_v, df_m, on='link', how='inner')
             if not df.empty:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
@@ -112,9 +139,6 @@ else:
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                 df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
-
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
-                c2.metric("Líquido", f"R$ {df['liq'].sum():,.2f}")
-                c3.metric("Vendas", len(df))
+                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}"); c2.metric("Líquido", f"R$ {df['liq'].sum():,.2f}"); c3.metric("Vendas", len(df))
                 st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']], use_container_width=True)
