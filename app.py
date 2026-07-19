@@ -15,7 +15,7 @@ def limpar_ns(val): return str(val).strip().upper().lstrip('0') if val else ""
 # --- LOGIN ADMIN ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if not st.session_state.auth:
-    st.title("🔐 Portal MJ PAG PRO")
+    st.title("🔐 Portal MJ")
     u, p = st.text_input("Usuário"), st.text_input("Senha", type="password")
     if st.button("Entrar"):
         if u == "admin" and p == "mj123": st.session_state.auth = True; st.rerun()
@@ -23,24 +23,8 @@ else:
     menu = st.sidebar.radio("NAVEGAÇÃO", ["📊 Dashboard", "👤 Vincular", "🏫 Gestão", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
-    # --- ABA VINCULAR ---
-    if menu == "👤 Vincular":
-        st.subheader("Vincular Máquinas")
-        res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
-        res_p = conn.table("planos_mj").select("nome_plano").execute()
-        with st.form("vin"):
-            c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
-            ns = st.text_area("Copie os NS aqui (separados por vírgula ou um por linha)")
-            pl = st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
-            if st.form_submit_button("Vincular"):
-                import re
-                for n in re.split(r'[,\n\r]+', ns):
-                    if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
-                st.success("✅ Máquinas vinculadas!")
-
-    # --- ABA DASHBOARD ---
-    elif menu == "📊 Dashboard":
-        st.title("📊 Dashboard MJ Financeiro")
+    if menu == "📊 Dashboard":
+        st.title("📊 Dashboard Financeiro")
         d_sel = st.sidebar.date_input("Filtrar Data", date(2026, 7, 15))
 
         v_res = conn.table("vendas").select("*").execute()
@@ -55,10 +39,10 @@ else:
             df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
             df_v = df_v[df_v['dt'].dt.date == d_sel]
             df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
-            
-            # Alerta NS não vinculado
+
+            # Alerta NS pendente
             perdidos = set(df_v['link'].unique()) - set(df_m['link'].unique())
-            if perdidos: st.warning(f"⚠️ Máquinas pendentes de vínculo: {', '.join(perdidos)}")
+            if perdidos: st.warning(f"⚠️ Vincule estes NS: {', '.join(perdidos)}")
 
             df = pd.merge(df_v, df_m, on='link', how='inner')
             if not df.empty:
@@ -69,11 +53,14 @@ else:
 
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
+                df['t_cus'] = pd.to_numeric(df.get('custo_decimal',0), errors='coerce').fillna(0)
                 df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
+                df['lucro_v'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Bruto Total", f"R$ {df['bruto_v'].sum():,.2f}")
-                c2.metric("Líquido Total", f"R$ {df['liq'].sum():,.2f}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
+                c2.metric("Líquido", f"R$ {df['liq'].sum():,.2f}")
                 c3.metric("Vendas", len(df))
+                c4.metric("Lucro Real", f"R$ {df['lucro_v'].sum():,.2f}")
                 st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']], use_container_width=True)
