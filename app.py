@@ -12,38 +12,44 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-def limpar_ns(val):
-    return str(val).strip().upper().lstrip('0') if val else ""
+def limpar_ns(val): return str(val).strip().upper().lstrip('0') if val else ""
 
 # --- LOGIN ---
 if 'perfil' not in st.session_state: st.session_state.perfil = None
 if st.session_state.perfil is None:
     st.title("🔐 Portal MJ")
     u, p = st.text_input("Usuário").lower().strip(), st.text_input("Senha", type="password")
-    if st.button("Entrar"):
+    if st.button("Entrar", use_container_width=True):
         if u == "admin" and p == "mj123": st.session_state.perfil = "admin"; st.rerun()
 else:
-    menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "🚪 Sair"])
+    menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "📂 Planos", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
-    # --- ABA VINCULAR ---
-    if menu == "👤 Vincular":
+    # ABAS ADMIN (MANTIDAS)
+    if menu == "🏫 Gestão":
+        res = conn.table("estabelecimentos").select("*").execute()
+        st.data_editor(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
+
+    elif menu == "👤 Vincular":
         st.subheader("👤 Vincular Nova Máquina")
         res_e = conn.table("estabelecimentos").select("nome_fantasia").execute()
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         with st.form("vin"):
             c = st.selectbox("Cliente", [e['nome_fantasia'] for e in res_e.data])
-            ns = st.text_area("Digite o NS (Se for PicPay Pix, use: PICPAY_PIX)")
+            ns = st.text_area("Digite o NS")
             pl = st.selectbox("Plano", [p['nome_plano'] for p in res_p.data])
             if st.form_submit_button("Vincular"):
                 for n in ns.split(","):
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
-                st.success("Vinculado com Sucesso!")
+                st.success("Vinculado!"); st.rerun()
 
-    # --- ABA DASHBOARD ---
+    # --- 🏠 DASHBOARD (RESTAURADO E MELHORADO) ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=60000, key="refresh")
         st.title("📊 Dashboard")
+        
+        # Filtros Sidebar
+        st.sidebar.subheader("Filtros")
         d_sel = st.sidebar.date_input("Data do Filtro", date(2026, 7, 20))
 
         v_res = conn.table("vendas").select("*").execute()
@@ -56,40 +62,48 @@ else:
             df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
             df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
 
-            # Filtro Data e Limpeza de NS
+            # Filtro Data e Link
             df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
             df_v = df_v[df_v['dt'].dt.date == d_sel]
-            df_v['link'] = df_v['ns'].apply(limpar_ns)
-            df_m['link'] = df_m['ns'].apply(limpar_ns)
-
-            # --- DIAGNÓSTICO: Quais vendas estão no banco mas sem lojista vinculado? ---
-            ns_no_banco = set(df_v['link'].unique())
-            ns_vinculados = set(df_m['link'].unique())
-            faltando = ns_no_banco - ns_vinculados
-            if faltando and "" not in faltando:
-                st.warning(f"⚠️ Existem vendas para os seguintes NS que não estão vinculados: **{', '.join(faltando)}**")
-                st.info("Copie estes números e adicione na aba Vincular.")
-
-            # Cruzamento (Left Join para não sumir com nada)
+            df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
+            
+            # Cruzamento (Left Join para ver tudo)
             df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
             df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
 
+            # Filtro de Lojistas na Sidebar
+            opcoes_lojistas = sorted(df['nome_lojista'].unique())
+            if st.session_state.perfil == "admin":
+                esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", opcoes_lojistas, default=opcoes_lojistas)
+                df = df[df['nome_lojista'].isin(esc_lojistas)]
+            else:
+                df = df[df['nome_lojista'] == st.session_state.usuario]
+
             if not df.empty:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
-                # Flexibilidade para o plano (aceita com ou sem 'x')
-                df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito', 'à vista')
-                df_t_c = df_t.drop_duplicates(subset=['id_plano', 'bandeira', 'meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
+                
+                # Ajuste inteligente do plano (em 10 -> em 10x)
+                df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito','à vista')
+                df['pl_adj'] = df['pl_adj'].apply(lambda x: x + "x" if "em " in x and not x.endswith("x") else x)
+                
+                df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
+                df_t_c['m_p'] = df_t_c['m_p'].str.lower()
+                
                 df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
 
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
+                df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0), errors='coerce').fillna(0)
+                
                 df['liq'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
+                df['lucro'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Bruto (Total no Banco)", f"R$ {df['bruto_v'].sum():,.2f}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
                 c2.metric("Líquido", f"R$ {df['liq'].sum():,.2f}")
-                c3.metric("Qtd Vendas", len(df))
+                c3.metric("Vendas", len(df))
+                c4.metric("Lucro Real", f"R$ {df['lucro'].sum():,.2f}")
                 st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq']], use_container_width=True)
 
-st.sidebar.caption("MJ Soluções v173.0")
+st.sidebar.caption("MJ Soluções v174.0")
