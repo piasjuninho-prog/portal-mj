@@ -31,32 +31,22 @@ if st.session_state.perfil is None:
                 st.session_state.perfil = "cliente"
                 st.session_state.usuario = res.data[0]['nome_fantasia']
                 st.rerun()
-            else: st.error("❌ Credenciais inválidas.")
+            else: st.error("❌ Login ou senha incorretos.")
 else:
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "📂 Planos", "🚪 Sair"])
     if menu == "🚪 Sair": st.session_state.perfil = None; st.rerun()
 
     # --- ABA GESTÃO ---
     if menu == "🏫 Gestão":
-        st.title("🏫 Gestão")
-        with st.expander("➕ CADASTRAR NOVO ESTABELECIMENTO"):
+        st.title("🏫 Gestão de Clientes")
+        with st.expander("➕ CADASTRAR NOVO CLIENTE"):
             with st.form("novo_c"):
                 n, e = st.text_input("Nome Fantasia"), st.text_input("Email")
-                if st.form_submit_button("Salvar"):
+                if st.form_submit_button("Salvar Cliente"):
                     conn.table("estabelecimentos").insert({"nome_fantasia": n.upper(), "email": e.lower(), "senha": "12345"}).execute()
-                    st.success("Cadastrado!"); st.rerun()
+                    st.success("Cadastrado com sucesso!"); st.rerun()
         res = conn.table("estabelecimentos").select("*").execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
-
-    # --- ABA PLANOS ---
-    elif menu == "📂 Planos":
-        st.title("📂 Planos de Taxas")
-        res_p = conn.table("planos_mj").select("*").execute()
-        if res_p.data:
-            ps = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
-            id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
-            res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-            if res_t.data: st.dataframe(pd.DataFrame(res_t.data), use_container_width=True)
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -65,20 +55,32 @@ else:
         res_p = conn.table("planos_mj").select("nome_plano").execute()
         with st.form("vinc"):
             c = st.selectbox("Selecione o Cliente", sorted([e['nome_fantasia'] for e in res_e.data]))
-            ns_txt = st.text_area("Digite os NS (separados por vírgula)")
+            ns_txt = st.text_area("Números de Série (NS)")
             pl = st.selectbox("Plano de Taxas", sorted([p['nome_plano'] for p in res_p.data]))
             if st.form_submit_button("✅ Salvar Vínculo"):
                 import re
                 for n in re.split(r'[,\n\s]+', ns_txt):
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
-                st.success("Vinculado!"); st.rerun()
+                st.success("Máquinas vinculadas!"); st.rerun()
 
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=60000, key="ref")
         st.title("📊 Dashboard")
+        
+        # 1. Carrega Lojistas para o Filtro na Sidebar
+        res_loj = conn.table("estabelecimentos").select("nome_fantasia").execute()
+        todos_lojistas = sorted([l['nome_fantasia'] for l in res_loj.data])
+
+        st.sidebar.subheader("Filtros")
+        if st.session_state.perfil == "admin":
+            esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", todos_lojistas, default=todos_lojistas)
+        else:
+            esc_lojistas = [st.session_state.usuario]
+        
         d_sel = st.sidebar.date_input("Data do Filtro", date(2026, 7, 20))
 
+        # 2. Coleta de Dados
         v_res = conn.table("vendas").select("*").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
         t_res = conn.table("taxas_dos_planos").select("*").execute()
@@ -94,8 +96,11 @@ else:
             df_v['link'] = df_v['ns'].apply(limpar_ns)
             df_m['link'] = df_m['ns'].apply(limpar_ns)
             
-            # Cruzamento (Usando sufixos para evitar o KeyError de NS)
+            # Cruzamento
             df = pd.merge(df_v, df_m, on='link', how='inner', suffixes=('', '_m'))
+            
+            # Aplica o filtro da sidebar
+            df = df[df['nome_lojista'].isin(esc_lojistas)]
 
             if not df.empty:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
@@ -109,23 +114,20 @@ else:
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                 df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0), errors='coerce').fillna(0)
+                
                 df['liq_v'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
                 df['lucro_v'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
-
-                if st.session_state.perfil != "admin":
-                    df = df[df['nome_lojista'] == st.session_state.usuario]
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
                 c2.metric("Líquido", f"R$ {df['liq_v'].sum():,.2f}")
                 c3.metric("Vendas", len(df))
-                c4.metric("Lucro", f"R$ {df['lucro_v'].sum():,.2f}")
+                c4.metric("Lucro MJ", f"R$ {df['lucro_v'].sum():,.2f}")
                 
-                # Exibição da Tabela
-                cols_view = ['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']
-                st.dataframe(df[cols_view].sort_index(ascending=False), use_container_width=True)
+                st.divider()
+                st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']].sort_index(ascending=False), use_container_width=True)
             else:
-                st.info("Nenhuma venda vinculada encontrada para este dia.")
+                st.info("Nenhuma venda encontrada para os filtros selecionados.")
 
-st.sidebar.caption("MJ Soluções v180.0")
+st.sidebar.caption("MJ Soluções v181.0")
