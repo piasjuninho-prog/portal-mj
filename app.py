@@ -7,7 +7,7 @@ from streamlit_autorefresh import st_autorefresh
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sidebar_state="expanded")
 
-# --- INICIALIZAÇÃO DE MEMÓRIA ---
+# --- INICIALIZAÇÃO DE MEMÓRIA SEGURA ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if 'usuario' not in st.session_state: st.session_state.usuario = ""
 if 'perfil' not in st.session_state: st.session_state.perfil = None
@@ -42,13 +42,12 @@ if not st.session_state.auth:
                     st.session_state.perfil = "cliente"
                     st.session_state.usuario = res.data[0]['nome_fantasia']
                     st.rerun()
-                else: st.error("❌ Acesso Negado.")
+                else: st.error("❌ Login ou senha incorretos.")
             except: st.error("Erro de conexão com o banco.")
 else:
-    # --- BARRA LATERAL (TODOS OS BOTÕES VOLTARAM) ---
+    # --- BARRA LATERAL ---
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     
-    # Carrega lista de lojistas para o filtro e para as abas
     res_est = conn.table("estabelecimentos").select("nome_fantasia").execute()
     todos_lojistas = sorted([e['nome_fantasia'] for e in res_est.data]) if res_est.data else []
 
@@ -67,18 +66,18 @@ else:
         st.session_state.auth = False
         st.rerun()
 
-    # --- ABA GESTÃO (CADASTRAR E EXCLUIR) ---
+    # --- ABA GESTÃO ---
     elif menu == "🏫 Gestão":
-        st.title("🏫 Gestão de Clientes")
+        st.title("🏫 Gestão de Estabelecimentos")
         col1, col2 = st.columns(2)
         with col1:
             with st.expander("➕ CADASTRAR NOVO"):
-                with st.form("add_c"):
+                with st.form("add_client"):
                     n = st.text_input("Nome Fantasia")
                     e = st.text_input("Email")
                     if st.form_submit_button("Salvar"):
                         conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "senha": "12345"}).execute()
-                        st.success("Cadastrado!"); st.rerun()
+                        st.rerun()
         with col2:
             with st.expander("🗑️ EXCLUIR CLIENTE"):
                 if todos_lojistas:
@@ -89,18 +88,55 @@ else:
         res = conn.table("estabelecimentos").select("*").execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
-    # --- ABA PLANOS ---
+    # --- ABA PLANOS (RESTAURADA COM CRIAÇÃO v196.0) ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
-        res_p = conn.table("planos_mj").select("*").execute()
-        if res_p.data:
-            ps = st.selectbox("Escolha o Plano:", [p['nome_plano'] for p in res_p.data])
-            id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
-            res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-            if res_t.data:
-                df_t = pd.DataFrame(res_t.data)
-                df_piv = pd.pivot_table(df_t, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
-                st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+        tab_v, tab_e = st.tabs(["📋 Visualizar Planos", "➕ Criar ou Editar"])
+        
+        with tab_v:
+            res_p = conn.table("planos_mj").select("*").execute()
+            if res_p.data:
+                ps = st.selectbox("Selecione o Plano para Ver:", [p['nome_plano'] for p in res_p.data])
+                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
+                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                if res_t.data:
+                    df_t = pd.DataFrame(res_t.data)
+                    df_piv = pd.pivot_table(df_t, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
+                    st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+
+        with tab_e:
+            st.subheader("Configuração de Taxas")
+            nome_p_edit = st.text_input("Nome do Plano (Ex: NOVO PLANO VIP)")
+            band_sel = st.selectbox("Selecione a Bandeira:", ORDEM_BANDEIRAS)
+            
+            df_ed = st.data_editor(pd.DataFrame({
+                "Modalidade": ORDEM_MODALIDADES, 
+                "Taxa Cliente (%)": [0.0]*13, 
+                "Custo (%)": [0.0]*13
+            }), use_container_width=True, hide_index=True)
+            
+            if st.button("💾 Salvar Bandeira no Plano"):
+                if not nome_p_edit:
+                    st.error("Digite o nome do plano!")
+                else:
+                    # 1. Garante que o plano existe
+                    p_res = conn.table("planos_mj").upsert({"nome_plano": nome_p_edit.upper().strip()}, on_conflict="nome_plano").execute()
+                    id_p = p_res.data[0]['id']
+                    
+                    # 2. Limpa taxas antigas dessa bandeira
+                    conn.table("taxas_dos_planos").delete().eq("id_plano", id_p).eq("bandeira", band_sel).execute()
+                    
+                    # 3. Insere as novas taxas (Tratando None como 0.0)
+                    batch = []
+                    for _, r in df_ed.iterrows():
+                        t_cli = float(r['Taxa Cliente (%)']) if pd.notnull(r['Taxa Cliente (%)']) else 0.0
+                        t_cus = float(r['Custo (%)']) if pd.notnull(r['Custo (%)']) else 0.0
+                        batch.append({
+                            "id_plano": id_p, "bandeira": band_sel, "meio": r['Modalidade'],
+                            "taxa_decimal": t_cli / 100, "custo_decimal": t_cus / 100
+                        })
+                    conn.table("taxas_dos_planos").insert(batch).execute()
+                    st.success(f"✅ Taxas de {band_sel.upper()} salvas no plano {nome_p_edit}!"); st.balloons()
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -110,16 +146,16 @@ else:
             c = st.selectbox("Selecione o Cliente", todos_lojistas)
             ns_txt = st.text_area("NS (Um por linha ou vírgula)")
             pl = st.selectbox("Plano de Taxas", sorted([p['nome_plano'] for p in res_p.data]))
-            if st.form_submit_button("✅ Vincular"):
+            if st.form_submit_button("✅ Salvar"):
                 import re
                 for n in re.split(r'[,\n\s]+', ns_txt):
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
-                st.success("Vinculado!"); st.rerun()
+                st.success("Vinculado!")
 
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
-        st_autorefresh(interval=60000, key="auto_ref_v195")
+        st_autorefresh(interval=60000, key="refresh_dash_final")
         st.title("📊 Dashboard Financeiro")
         
         v_res = conn.table("vendas").select("*").execute()
@@ -130,11 +166,9 @@ else:
         if v_res.data:
             df_v, df_m = pd.DataFrame(v_res.data), pd.DataFrame(m_res.data)
             df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
-            
             df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
             df_v = df_v[df_v['dt'].dt.date == d_sel]
             df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
-            
             df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='inner', suffixes=('', '_m'))
             df = df[df['nome_lojista'].isin(esc_lojistas)]
 
@@ -143,19 +177,14 @@ else:
                 df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito','à vista').apply(lambda x: x + "x" if "em " in x and not x.endswith("x") else x)
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
-                
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                 df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0), errors='coerce').fillna(0)
                 df['liq_v'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
                 df['lucro_v'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
-
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
-                c2.metric("Líquido", f"R$ {df['liq_v'].sum():,.2f}")
-                c3.metric("Vendas", len(df))
-                c4.metric("Lucro MJ", f"R$ {df['lucro_v'].sum():,.2f}")
+                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}"); c2.metric("Líquido", f"R$ {df['liq_v'].sum():,.2f}"); c3.metric("Vendas", len(df)); c4.metric("Lucro MJ", f"R$ {df['lucro_v'].sum():,.2f}")
                 st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
             else: st.info("Nenhuma venda encontrada.")
-st.sidebar.caption("MJ Soluções v195.0")
+st.sidebar.caption("MJ Soluções v196.0")
