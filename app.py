@@ -17,8 +17,8 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# --- CONSTANTES ATUALIZADAS (INCLUI PIX) ---
-ORDEM_MODALIDADES = ["pix", "débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
+# --- CONSTANTES ---
+MODALIDADES_CARTAO = ["débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard", "pix"]
 
 def limpar_ns(val): 
@@ -58,26 +58,10 @@ else:
     # --- ABA GESTÃO ---
     elif menu == "🏫 Gestão":
         st.title("🏫 Gestão de Clientes")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.expander("➕ CADASTRAR NOVO"):
-                with st.form("add"):
-                    n = st.text_input("Nome Fantasia")
-                    e = st.text_input("Email")
-                    if st.form_submit_button("Salvar"):
-                        conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "senha": "12345"}).execute()
-                        st.rerun()
-        with col2:
-            with st.expander("🗑️ EXCLUIR"):
-                if todos_lojistas:
-                    del_sel = st.selectbox("Escolha para remover:", todos_lojistas)
-                    if st.button("❌ Confirmar Exclusão"):
-                        conn.table("estabelecimentos").delete().eq("nome_fantasia", del_sel).execute()
-                        st.rerun()
         res = conn.table("estabelecimentos").select("*").execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
-    # --- ABA PLANOS (COM PIX v198.0) ---
+    # --- ABA PLANOS (ATUALIZADA v199.0) ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         tab_v, tab_e = st.tabs(["📋 Visualizar Planos", "⚙️ Criar ou Editar"])
@@ -91,33 +75,39 @@ else:
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
                     df_t = pd.DataFrame(res_t.data)
-                    df_piv = pd.pivot_table(df_t, values='taxa_decimal', index='meio', columns='bandeira', aggfunc='last').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS)
-                    st.dataframe(df_piv.map(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "-"), use_container_width=True)
+                    st.dataframe(df_t[['bandeira', 'meio', 'taxa_decimal', 'custo_decimal']], use_container_width=True)
 
         with tab_e:
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.subheader("Configurar Taxas (Cartão e Pix)")
-                modo = st.radio("Ação:", ["Criar Novo Plano", "Editar Existente"], horizontal=True)
-                nome_final = st.selectbox("Plano:", lista_planos) if modo == "Editar Existente" else st.text_input("Nome do Novo Plano")
-                band_sel = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
-                
-                df_ed = st.data_editor(pd.DataFrame({"Modalidade": ORDEM_MODALIDADES, "Taxa Cliente (%)": [0.0]*len(ORDEM_MODALIDADES), "Custo (%)": [0.0]*len(ORDEM_MODALIDADES)}), use_container_width=True, hide_index=True)
-                if st.button("💾 Salvar Bandeira"):
+            modo = st.radio("Ação:", ["Criar Novo Plano", "Editar Existente"], horizontal=True)
+            nome_final = st.selectbox("Escolha o Plano:", lista_planos) if modo == "Editar Existente" else st.text_input("Nome do Novo Plano")
+            band_sel = st.selectbox("Selecione a Bandeira:", ORDEM_BANDEIRAS)
+            
+            # LÓGICA INTELIGENTE: Se for PIX, mostra apenas uma linha
+            if band_sel == "pix":
+                modalidades_finais = ["pix"]
+            else:
+                modalidades_finais = MODALIDADES_CARTAO
+
+            st.write(f"Preencha as taxas para: **{band_sel.upper()}**")
+            df_ed = st.data_editor(pd.DataFrame({
+                "Modalidade": modalidades_finais, 
+                "Taxa Cliente (%)": [0.0]*len(modalidades_finais), 
+                "Custo (%)": [0.0]*len(modalidades_finais)
+            }), use_container_width=True, hide_index=True)
+
+            if st.button("💾 Salvar Taxas"):
+                if nome_final:
                     p_res = conn.table("planos_mj").upsert({"nome_plano": nome_final.upper().strip()}, on_conflict="nome_plano").execute()
                     id_p_f = p_res.data[0]['id']
                     conn.table("taxas_dos_planos").delete().eq("id_plano", id_p_f).eq("bandeira", band_sel).execute()
-                    batch = [{"id_plano": id_p_f, "bandeira": band_sel, "meio": r['Modalidade'], "taxa_decimal": float(r['Taxa Cliente (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
+                    batch = []
+                    for _, r in df_ed.iterrows():
+                        batch.append({
+                            "id_plano": id_p_f, "bandeira": band_sel, "meio": r['Modalidade'],
+                            "taxa_decimal": float(r['Taxa Cliente (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100
+                        })
                     conn.table("taxas_dos_planos").insert(batch).execute()
-                    st.success("✅ Salvo!"); st.rerun()
-            with c2:
-                st.subheader("🗑️ Apagar")
-                pl_del = st.selectbox("Plano para apagar:", lista_planos, key="del_p")
-                if st.button("🔥 APAGAR TUDO"):
-                    id_d = next(p['id'] for p in res_p.data if p['nome_plano'] == pl_del)
-                    conn.table("taxas_dos_planos").delete().eq("id_plano", id_d).execute()
-                    conn.table("planos_mj").delete().eq("id", id_d).execute()
-                    st.rerun()
+                    st.success("✅ Taxas salvas com sucesso!"); st.rerun()
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -137,7 +127,7 @@ else:
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         st_autorefresh(interval=60000, key="refresh_dash")
-        st.title("📊 Dashboard")
+        st.title("📊 Dashboard Financeiro")
         v_res, m_res = conn.table("vendas").select("*").execute(), conn.table("maquinas_ns").select("*").execute()
         t_res, p_res = conn.table("taxas_dos_planos").select("*").execute(), conn.table("planos_mj").select("id, nome_plano").execute()
 
@@ -153,7 +143,7 @@ else:
             if not df.empty:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
                 df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito','à vista')
-                # Se não for PIX, garante o 'x' no final
+                # Se for parcelado e não tiver o 'x', adiciona (ex: em 10 -> em 10x)
                 df['pl_adj'] = df['pl_adj'].apply(lambda x: x + "x" if "em " in x and not x.endswith("x") else x)
                 
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
@@ -167,9 +157,7 @@ else:
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}")
-                c2.metric("Líquido", f"R$ {df['liq_v'].sum():,.2f}")
-                c3.metric("Vendas", len(df))
-                c4.metric("Lucro MJ", f"R$ {df['lucro_v'].sum():,.2f}")
+                c1.metric("Bruto", f"R$ {df['bruto_v'].sum():,.2f}"); c2.metric("Líquido", f"R$ {df['liq_v'].sum():,.2f}")
+                c3.metric("Vendas", len(df)); c4.metric("Lucro MJ", f"R$ {df['lucro_v'].sum():,.2f}")
                 st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
-st.sidebar.caption("MJ Soluções v198.0")
+st.sidebar.caption("MJ Soluções v199.0")
