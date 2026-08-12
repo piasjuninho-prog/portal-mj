@@ -12,9 +12,9 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# --- CONSTANTES ---
+# --- CONSTANTES (Adicionado PicPay) ---
 ORDEM_MODALIDADES = ["pix", "débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
-ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard", "pix"]
+ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard", "pix", "picpay"]
 
 def limpar_ns(val):
     if not val: return ""
@@ -44,7 +44,7 @@ else:
 
     if st.session_state.perfil == "admin":
         st.sidebar.subheader("Filtros Dashboard")
-        esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", todos_lojistas, default=todos_lojistas)
+        esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", ["⚠️ NÃO VINCULADO"] + todos_lojistas, default=["⚠️ NÃO VINCULADO"] + todos_lojistas)
         d_sel = st.sidebar.date_input("Data do Filtro", date.today())
         st.sidebar.divider()
         menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "📂 Planos", "🚪 Sair"])
@@ -119,10 +119,10 @@ else:
                 conn.table("estabelecimentos").update({"nome_plano_ativo": pl}).eq("nome_fantasia", c).execute()
                 st.success("✅ Vinculado!")
 
-    # --- ABA DASHBOARD ---
+    # --- ABA DASHBOARD (REPARADA v209) ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60000, key="refresh_v208")
+        st_autorefresh(interval=60000, key="refresh_v209")
         st.title("📊 Dashboard Financeiro")
         
         v_res = conn.table("vendas").select("*").execute()
@@ -135,51 +135,65 @@ else:
             df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
             df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
             
+            # Limpeza e Filtro de Data
             df_v['dt'] = pd.to_datetime(df_v['data_venda'], dayfirst=True, errors='coerce')
             df_v = df_v[df_v['dt'].dt.date == d_sel]
             df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
             
-            # --- BARRA DE STATUS DO BANCO (NOVIDADE v208) ---
-            total_banco = len(df_v)
+            # --- STATUS DO BANCO ---
             bruto_banco = pd.to_numeric(df_v['bruto'], errors='coerce').sum()
-            st.info(f"🏦 **Status do Banco de Dados:** O robô enviou **{total_banco}** vendas hoje, totalizando **R$ {bruto_banco:,.2f}** bruto.")
+            st.info(f"🏦 **Status do Banco:** Robô enviou **{len(df_v)}** vendas hoje (R$ {bruto_banco:,.2f} bruto).")
 
-            # Diagnóstico de Vínculos Perdidos
-            df_check = pd.merge(df_v, df_m[['link', 'nome_lojista']], on='link', how='left')
-            vendas_sem_dono = df_check[df_check['nome_lojista'].isna()]
-            if not vendas_sem_dono.empty:
-                st.error(f"🚨 ALERTA: Existem {len(vendas_sem_dono)} vendas aguardando vínculo!")
-                st.write("Copie os Números de Série (NS) abaixo e vincule na aba **👤 Vincular**:")
-                st.table(vendas_sem_dono.groupby('ns').agg({'bruto': 'sum', 'adquirente': 'first'}).reset_index())
-                st.divider()
-
-            # Cruzamento Principal
-            df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='inner')
+            # --- CRUZAMENTO (USANDO LEFT JOIN COMO NO v205) ---
+            df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
+            df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
+            
+            # Aplicar filtro de Lojistas
             df = df[df['nome_lojista'].isin(esc_lojistas)]
 
             if not df.empty:
                 df = pd.merge(df, df_p, on='nome_plano', how='left')
-                df['pl_adj'] = df['plano'].astype(str).str.lower().replace('crédito','à vista').apply(lambda x: x + "x" if "em " in x and not x.endswith("x") else x)
+                
+                # Normalização de Plano (Melhorada para PicPay e Parcelados)
+                def tratar_plano(row):
+                    p = str(row['plano']).lower()
+                    if 'débito' in p: return 'débito'
+                    if 'pix' in p or row['bandeira'] == 'pix': return 'pix'
+                    if 'parcelado' in p or 'em ' in p or 'x' in p:
+                        m = re.search(r'(\d+)', p)
+                        return f"em {m.group(1)}x" if m else "à vista"
+                    return 'à vista'
+                
+                df['pl_adj'] = df.apply(tratar_plano, axis=1)
+                
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
                 
+                # Cálculos
                 df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
                 df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
                 df['t_cus'] = pd.to_numeric(df.get('custo_decimal', 0), errors='coerce').fillna(0)
+                
                 df['liq_v'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
                 df['lucro'] = (df['bruto_v'] * (df['t_cli'] - df['t_cus'])).round(2)
                 df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Bruto (Vinculado)", f"R$ {df['bruto_v'].sum():,.2f}")
+                c1.metric("Bruto (Filtrado)", f"R$ {df['bruto_v'].sum():,.2f}")
                 c2.metric("Líquido Total", f"R$ {df['liq_v'].sum():,.2f}")
-                c3.metric("Vendas Vinculadas", len(df))
+                c3.metric("Qtd Vendas", len(df))
                 if st.session_state.perfil == "admin":
                     c4.metric("Lucro MJ Real", f"R$ {df['lucro'].sum():,.2f}")
-                st.dataframe(df[['data_venda', 'nome_lojista', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
+                
+                st.dataframe(df[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
+                
+                # Alerta de Vínculo
+                perdidos = df[df['nome_lojista'] == "⚠️ NÃO VINCULADO"]
+                if not perdidos.empty:
+                    st.warning(f"🚨 Existem {len(perdidos)} vendas sem vínculo. Verifique os NS na aba Vincular.")
             else:
-                st.info("Nenhuma venda vinculada encontrada para este filtro.")
+                st.info("Nenhuma venda vinculada para os filtros selecionados.")
         else:
-            st.warning("Aguardando sincronização de vendas...")
+            st.warning("Banco de dados vazio para o dia de hoje.")
 
-st.sidebar.caption("MJ Soluções v208.0")
+st.sidebar.caption("MJ Soluções v209.0")
