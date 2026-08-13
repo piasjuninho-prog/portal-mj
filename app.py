@@ -37,20 +37,17 @@ else:
     todos_lojistas = sorted([e['nome_fantasia'] for e in res_est.data]) if res_est.data else []
     
     d_sel = st.sidebar.date_input("Data do Filtro", date.today())
-    esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", ["⚠️ NÃO VINCULADO"] + todos_lojistas, default=["⚠️ NÃO VINCULADO"] + todos_lojistas)
     menu = st.sidebar.radio("NAVEGAÇÃO", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "📂 Planos", "🚪 Sair"])
     
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
-    # --- ABA DASHBOARD (v217.0 - BUSCA FILTRADA NO BANCO) ---
+    # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60000, key="refresh_v217")
+        st_autorefresh(interval=60000, key="refresh_v218")
         st.title("📊 Dashboard Financeiro")
         
-        # O SEGREDO: Buscamos no banco apenas o texto da data selecionada
         data_txt = d_sel.strftime('%d/%m/%Y')
-        
         v_res = conn.table("vendas").select("*").ilike("data_venda", f"%{data_txt}%").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
         t_res = conn.table("taxas_dos_planos").select("*").execute()
@@ -61,18 +58,20 @@ else:
             df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
             df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
             
-            # Limpeza de NS para Vínculo
             df_v['link'] = df_v['ns'].apply(limpar_ns)
             df_m['link'] = df_m['ns'].apply(limpar_ns)
             
-            # Merge para encontrar donos
             df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
             df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
             df['nome_plano'] = df['nome_plano'].fillna("SEM PLANO")
 
+            # --- Sidebar Dinâmica (v218) ---
+            # Só mostra o aviso se houver alguma venda órfã
+            opcoes_lojistas = sorted(df['nome_lojista'].unique())
+            esc_lojistas = st.sidebar.multiselect("Filtrar Lojistas:", opcoes_lojistas, default=opcoes_lojistas)
+
             st.success(f"✅ Sucesso! Encontramos **{len(df)}** vendas no banco para o dia {data_txt}.")
 
-            # Filtro de Lojista Sidebar
             df_f = df[df['nome_lojista'].isin(esc_lojistas)].copy()
 
             if not df_f.empty:
@@ -104,7 +103,7 @@ else:
             else:
                 st.warning("Selecione os lojistas na barra lateral.")
         else:
-            st.info(f"O banco de dados não retornou vendas para {data_txt}. Tente rodar o robô novamente.")
+            st.info(f"O banco de dados não retornou vendas para {data_txt}.")
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -119,4 +118,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v217.0")
+st.sidebar.caption("MJ Soluções v218.0")
