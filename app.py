@@ -19,6 +19,7 @@ ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard", "pix", "pic
 def limpar_ns(val):
     """Limpa NS mantendo letras e números (Essencial para terminais J9B do PagBank)"""
     if not val: return ""
+    # Remove espaços, converte pra maiúsculo e remove zeros à esquerda
     res = re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
     return res if res else "0"
 
@@ -33,10 +34,12 @@ if not st.session_state.auth:
         if u == "admin" and p == "mj123": 
             st.session_state.auth = True; st.session_state.perfil = "admin"; st.session_state.usuario = "ADMINISTRADOR"; st.rerun()
         else:
-            res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
-            if res.data and p == str(res.data[0].get('senha', '12345')):
-                st.session_state.auth = True; st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
-            else: st.error("❌ Credenciais inválidas.")
+            try:
+                res = conn.table("estabelecimentos").select("*").eq("email", u).execute()
+                if res.data and p == str(res.data[0].get('senha', '12345')):
+                    st.session_state.auth = True; st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
+                else: st.error("❌ Credenciais inválidas.")
+            except: st.error("Erro de conexão.")
 else:
     # --- BARRA LATERAL ---
     st.sidebar.title(f"👤 {st.session_state.usuario}")
@@ -55,6 +58,36 @@ else:
     
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
+    # --- ABA GESTÃO ---
+    elif menu == "🏫 Gestão":
+        st.title("🏫 Gestão de Estabelecimentos")
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.expander("➕ CADASTRAR NOVO"):
+                with st.form("add"):
+                    n, e = st.text_input("Nome Fantasia"), st.text_input("Email")
+                    if st.form_submit_button("Salvar"):
+                        conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "senha": "12345"}).execute()
+                        st.success("✅ Cadastrado!"); st.rerun()
+        res = conn.table("estabelecimentos").select("*").execute()
+        if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
+
+    # --- ABA PLANOS ---
+    elif menu == "📂 Planos":
+        st.title("📂 Planos de Taxas")
+        t1, t2 = st.tabs(["📋 Visualizar", "⚙️ Criar/Editar"])
+        res_p = conn.table("planos_mj").select("*").execute()
+        lista_p = sorted([p['nome_plano'] for p in res_p.data]) if res_p.data else []
+        with t1:
+            if lista_p:
+                ps = st.selectbox("Ver Plano:", lista_p)
+                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
+                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                if res_t.data:
+                    df_tax = pd.DataFrame(res_t.data)
+                    df_tax['%'] = df_tax['taxa_decimal'].apply(lambda x: f"{x*100:.2f}%")
+                    st.dataframe(pd.pivot_table(df_tax, values='%', index='meio', columns='bandeira', aggfunc='first').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS).fillna("-"), use_container_width=True)
+
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
         st.title("👤 Vincular Máquina/Terminal")
@@ -68,14 +101,14 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("✅ Vinculado com sucesso!")
 
-    # --- ABA DASHBOARD (v215.0 - FILTRO POR STRING) ---
+    # --- ABA DASHBOARD (v216.0 - MEGA FILTRO) ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60000, key="refresh_v215")
+        st_autorefresh(interval=60000, key="refresh_v216")
         st.title("📊 Dashboard Financeiro")
         
-        # 1. Coleta Dados (Buscamos as 3000 mais recentes para garantir que pegamos o dia)
-        v_res = conn.table("vendas").select("*").order("id", desc=True).limit(3000).execute()
+        # 1. Coleta de Dados (Limite de 10k para cobrir todo o histórico recente)
+        v_res = conn.table("vendas").select("*").order("id", desc=True).limit(10000).execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
         t_res = conn.table("taxas_dos_planos").select("*").execute()
         p_res = conn.table("planos_mj").select("id, nome_plano").execute()
@@ -83,61 +116,66 @@ else:
         if v_res.data:
             df_total = pd.DataFrame(v_res.data)
             
-            # --- FILTRO DE DATA POR TEXTO (O SEGREDO DO FIX) ---
-            # Transformamos a data do calendário (2026-08-12) em texto (12/08/2026)
+            # --- FILTRO DE DATA POR TEXTO (dd/mm/aaaa) ---
             data_busca = d_sel.strftime('%d/%m/%Y')
-            
-            # Filtramos as vendas que CONTÉM esse texto na coluna data_venda
             df_v = df_total[df_total['data_venda'].astype(str).str.contains(data_busca)].copy()
             
             if not df_v.empty:
                 df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
                 df_t, df_p = pd.DataFrame(t_res.data), pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
                 
-                # --- VÍNCULO NS ---
+                # --- VÍNCULO NS (Limpeza agressiva) ---
                 df_v['link'] = df_v['ns'].apply(limpar_ns)
                 df_m['link'] = df_m['ns'].apply(limpar_ns)
                 
+                # MERGE LEFT (Garante que nada suma)
                 df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
                 df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
+                df['nome_plano'] = df['nome_plano'].fillna("SEM PLANO")
                 
-                st.success(f"📦 Encontradas {len(df)} vendas para o dia {data_busca}")
+                # Mensagem de sucesso com total do dia
+                bruto_dia = pd.to_numeric(df['bruto'], errors='coerce').sum()
+                st.success(f"📦 Encontradas {len(df)} vendas no banco para {data_busca} (Total R$ {bruto_dia:,.2f})")
 
-                # Filtro Sidebar Lojista
-                df = df[df['nome_lojista'].isin(esc_lojistas)]
+                # Filtro Lojista Sidebar
+                df_f = df[df['nome_lojista'].isin(esc_lojistas)].copy()
 
-                if not df.empty:
-                    df = pd.merge(df, df_p, on='nome_plano', how='left')
+                if not df_f.empty:
+                    df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
+                    
+                    # Normalização de Meio de Pagamento
                     def norm_pl(row):
                         p = str(row['plano']).lower()
                         if 'débito' in p: return 'débito'
                         if 'pix' in p or str(row['bandeira']).lower() == 'pix': return 'pix'
                         m = re.findall(r'\d+', p)
                         return f"em {m[0]}x" if m else 'à vista'
-                    df['pl_adj'] = df.apply(norm_pl, axis=1)
                     
+                    df_f['pl_adj'] = df_f.apply(norm_pl, axis=1)
+                    
+                    # Merge Taxas
                     df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
-                    df = pd.merge(df, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
+                    df_f = pd.merge(df_f, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
                     
-                    df['bruto_v'] = pd.to_numeric(df['bruto'], errors='coerce').fillna(0)
-                    df['t_cli'] = pd.to_numeric(df['taxa_decimal'], errors='coerce').fillna(0)
-                    df['liq_v'] = (df['bruto_v'] * (1 - df['t_cli'])).round(2)
-                    df['taxa_txt'] = (df['t_cli'] * 100).map("{:.2f}%".format)
+                    # Cálculos
+                    df_f['bruto_v'] = pd.to_numeric(df_f['bruto'], errors='coerce').fillna(0)
+                    df_f['t_cli'] = pd.to_numeric(df_f['taxa_decimal'], errors='coerce').fillna(0)
+                    df_f['liq_v'] = (df_f['bruto_v'] * (1 - df_f['t_cli'])).round(2)
+                    df_f['taxa_txt'] = (df_f['t_cli'] * 100).map("{:.2f}%".format)
 
+                    # Cards
                     st.divider()
                     k1, k2, k3 = st.columns(3)
-                    k1.metric("Bruto (Filtrado)", f"R$ {df['bruto_v'].sum():,.2f}")
-                    k2.metric("Líquido Total", f"R$ {df['liq_v'].sum():,.2f}")
-                    k3.metric("Vendas Exibidas", len(df))
+                    k1.metric("Bruto (Filtrado)", f"R$ {df_f['bruto_v'].sum():,.2f}")
+                    k2.metric("Líquido Total", f"R$ {df_f['liq_v'].sum():,.2f}")
+                    k3.metric("Vendas Exibidas", len(df_f))
                     
-                    st.dataframe(df[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
+                    st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
                 else:
-                    st.warning("Selecione os lojistas na barra lateral para ver os dados.")
+                    st.warning("Selecione os lojistas na barra lateral.")
             else:
-                st.info(f"Nenhuma venda encontrada no banco com a data: {data_busca}")
-                with st.expander("Ver dados brutos do banco"):
-                    st.write(df_total[['data_venda', 'ns', 'bruto']].head(10))
+                st.info(f"Sem vendas registradas no banco para o dia {data_busca}")
         else:
-            st.error("O banco de dados está vazio.")
+            st.error("Banco de dados vazio.")
 
-st.sidebar.caption("MJ Soluções v215.0")
+st.sidebar.caption("MJ Soluções v216.0")
