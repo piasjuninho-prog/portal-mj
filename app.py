@@ -23,19 +23,25 @@ def limpar_ns(val):
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
 def safe_text(text):
+    """Garante que o texto não quebre o PDF (remove acentos e emojis)"""
     if text is None: return ""
     text = str(text)
     nfkd_form = unicodedata.normalize('NFKD', text)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
-def gerar_pdf_v236(df, data_ref, bruto, liquido, qtd):
+def gerar_pdf_v237(df, data_ref, bruto, liquido, qtd):
+    # PDF em Paisagem para caber todas as colunas
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
+    
+    # Cabeçalho
     pdf.set_font("Helvetica", 'B', 18)
     pdf.cell(277, 10, safe_text("MJ SOLUCOES - RELATORIO DETALHADO DE VENDAS"), 0, 1, 'C')
     pdf.set_font("Helvetica", '', 12)
     pdf.cell(277, 7, f"Data das Vendas: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
+    
+    # Resumo
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", 'B', 14)
     pdf.cell(277, 10, safe_text(" RESUMO DO PERIODO"), 1, 1, 'L', 1)
@@ -44,6 +50,8 @@ def gerar_pdf_v236(df, data_ref, bruto, liquido, qtd):
     pdf.cell(92, 10, safe_text(f"Liquido Total: RS {liquido:,.2f}"), 1, 0, 'C')
     pdf.cell(93, 10, safe_text(f"Qtd Vendas: {qtd}"), 1, 1, 'C')
     pdf.ln(5)
+    
+    # Tabela Detalhada
     pdf.set_font("Helvetica", 'B', 9)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
@@ -54,6 +62,7 @@ def gerar_pdf_v236(df, data_ref, bruto, liquido, qtd):
     pdf.cell(25, 8, "Taxa %", 1, 0, 'C', 1)
     pdf.cell(40, 8, "Bruto", 1, 0, 'C', 1)
     pdf.cell(40, 8, "Liquido", 1, 1, 'C', 1)
+    
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
         pdf.cell(25, 7, safe_text(row['data_venda']), 1, 0, 'C')
@@ -64,6 +73,7 @@ def gerar_pdf_v236(df, data_ref, bruto, liquido, qtd):
         pdf.cell(25, 7, safe_text(row['taxa_txt']), 1, 0, 'C')
         pdf.cell(40, 7, safe_text(f"RS {row['bruto_v']:,.2f}"), 1, 0, 'R')
         pdf.cell(40, 7, safe_text(f"RS {row['liq_v']:,.2f}"), 1, 1, 'R')
+        
     return bytes(pdf.output())
 
 # --- LOGIN ---
@@ -81,6 +91,7 @@ if not st.session_state.auth:
                 st.session_state.auth = True; st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Credenciais inválidas.")
 else:
+    # --- BARRA LATERAL ---
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     res_est = conn.table("estabelecimentos").select("nome_fantasia").execute()
     todos_lojistas = sorted([e['nome_fantasia'] for e in res_est.data]) if res_est.data else []
@@ -89,9 +100,10 @@ else:
     
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
+    # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=300000, key="refresh_v236")
+        st_autorefresh(interval=300000, key="refresh_v237")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -121,12 +133,11 @@ else:
             if not df_f.empty:
                 df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
                 
-                # --- NORMALIZACAO ESPECIFICA PARA "CREDITO A VISTA" ---
+                # Normalização Inteligente de Meio/Plano
                 def norm_pl(row):
                     p = str(row['plano']).lower()
                     if 'débito' in p or 'debito' in p: return 'débito'
                     if 'pix' in p: return 'pix'
-                    # Se contiver 'à vista' ou 'a vista' ou 'crédito' (sem parcelas)
                     if 'à vista' in p or 'a vista' in p or ('crédito' in p and 'x' not in p): 
                         return 'à vista'
                     m = re.findall(r'\d+', p)
@@ -142,27 +153,34 @@ else:
                 df_f['liq_v'] = (df_f['bruto_v'] * (1 - df_f['t_cli'])).round(2)
                 df_f['taxa_txt'] = (df_f['t_cli'] * 100).map("{:.2f}%".format)
 
-                st.success(f"📦 Encontradas {len(df_f)} vendas.")
+                st.success(f"📦 Sucesso! {len(df_f)} vendas vinculadas encontradas.")
                 k1, k2, k3 = st.columns(3)
                 vb, vl, vq = df_f['bruto_v'].sum(), df_f['liq_v'].sum(), len(df_f)
                 k1.metric("Bruto Total", f"R$ {vb:,.2f}")
                 k2.metric("Liquido Total", f"R$ {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
+                # --- BOTÃO PDF v237 ---
                 st.divider()
                 try:
-                    pdf_bytes = gerar_pdf_v236(df_f, data_txt, vb, vl, vq)
-                    st.download_button(label="📄 Baixar Relatorio PDF Completo", data=pdf_bytes, file_name=f"Relatorio_{data_txt.replace('/','_')}.pdf", mime="application/pdf", use_container_width=True)
+                    pdf_bytes = gerar_pdf_v237(df_f, data_txt, vb, vl, vq)
+                    st.download_button(
+                        label="📄 Baixar Relatorio PDF Detalhado",
+                        data=pdf_bytes,
+                        file_name=f"Relatorio_MJ_{data_txt.replace('/','_')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
                 except Exception as e:
-                    st.error(f"Erro no PDF: {e}")
+                    st.error(f"Erro ao gerar PDF: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'ns', 'bandeira', 'plano', 'taxa_txt', 'bruto_v', 'liq_v']], use_container_width=True)
             else:
-                st.warning("Selecione os lojistas.")
+                st.warning("Selecione os lojistas na barra lateral.")
         else:
-            st.info(f"Sem vendas para {data_txt}.")
+            st.info(f"O banco de dados não retornou vendas para {data_txt}.")
 
-    # --- ABAS GESTÃO, VINCULAR, PLANOS (MANTIDAS) ---
+    # --- ABAS GESTÃO, VINCULAR E PLANOS ---
     elif menu == "🏫 Gestão":
         st.title("🏫 Gestão de Estabelecimentos")
         c1, c2 = st.columns(2)
@@ -205,4 +223,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("✅ Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v236.0")
+st.sidebar.caption("MJ Soluções v237.0")
