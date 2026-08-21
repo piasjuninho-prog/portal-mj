@@ -3,6 +3,7 @@ import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 import re
+import unicodedata
 from fpdf import FPDF
 from io import BytesIO
 
@@ -19,51 +20,59 @@ def limpar_ns(val):
     if not val: return ""
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
-def fix_text(text):
-    """Converte texto para formato aceito pelo PDF (Latin-1)"""
+def safe_pdf_text(text):
+    """Converte qualquer texto para ASCII puro para evitar falha no download"""
     if text is None: return ""
-    # Substitui caracteres que não existem no Latin-1
-    return str(text).encode('latin-1', 'replace').decode('latin-1').replace('?', '-')
+    # Remove acentos (ã -> a)
+    normalized = unicodedata.normalize('NFKD', str(text))
+    # Filtra apenas caracteres básicos
+    ascii_text = "".join([c for c in normalized if not unicodedata.combining(c)])
+    # Remove emojis e caracteres especiais, mantendo apenas o essencial
+    return ascii_text.encode('ascii', 'ignore').decode('ascii').replace('$', 'RS')
 
-def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
+def gerar_pdf_final(df, data_ref, bruto, liquido, qtd):
     pdf = FPDF()
     pdf.add_page()
     
-    # Cabeçalho
+    # Configurações de fonte padrão
     pdf.set_font("Helvetica", 'B', 16)
-    pdf.cell(190, 10, fix_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
+    pdf.cell(190, 10, safe_pdf_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
+    
     pdf.set_font("Helvetica", '', 10)
     pdf.cell(190, 7, f"Data: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
     
-    # Resumo
+    # Bloco de Resumo
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", 'B', 12)
     pdf.cell(190, 10, " RESUMO GERAL", 1, 1, 'L', 1)
-    pdf.set_font("Helvetica", '', 11)
-    pdf.cell(63, 10, fix_text(f"Bruto: RS {bruto:,.2f}"), 1, 0, 'C')
-    pdf.cell(63, 10, fix_text(f"Liquido: RS {liquido:,.2f}"), 1, 0, 'C')
-    pdf.cell(64, 10, fix_text(f"Vendas: {qtd}"), 1, 1, 'C')
+    
+    pdf.set_font("Helvetica", '', 12)
+    # Formatamos os números antes de enviar para o PDF
+    pdf.cell(63, 10, safe_pdf_text(f"Bruto: RS {bruto:,.2f}"), 1, 0, 'C')
+    pdf.cell(63, 10, safe_pdf_text(f"Liquido: RS {liquido:,.2f}"), 1, 0, 'C')
+    pdf.cell(64, 10, safe_pdf_text(f"Vendas: {qtd}"), 1, 1, 'C')
     pdf.ln(5)
     
-    # Tabela
+    # Cabeçalho da Tabela
     pdf.set_font("Helvetica", 'B', 9)
-    pdf.set_fill_color(220, 220, 220)
+    pdf.set_fill_color(200, 200, 200)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
-    pdf.cell(70, 8, "Lojista", 1, 0, 'C', 1)
+    pdf.cell(70, 8, "Estabelecimento", 1, 0, 'C', 1)
     pdf.cell(25, 8, "Band.", 1, 0, 'C', 1)
-    pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
-    pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
+    pdf.cell(35, 8, "Bruto (RS)", 1, 0, 'C', 1)
+    pdf.cell(35, 8, "Liq. (RS)", 1, 1, 'C', 1)
     
+    # Dados da Tabela
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
-        pdf.cell(25, 7, fix_text(row['data_venda']), 1, 0, 'C')
-        pdf.cell(70, 7, fix_text(str(row['nome_lojista'])[:32]), 1, 0, 'L')
-        pdf.cell(25, 7, fix_text(row['bandeira']), 1, 0, 'C')
-        pdf.cell(35, 7, f"RS {row['bruto_v']:,.2f}", 1, 0, 'R')
-        pdf.cell(35, 7, f"RS {row['liq_v']:,.2f}", 1, 1, 'R')
+        pdf.cell(25, 7, safe_pdf_text(row['data_venda']), 1, 0, 'C')
+        pdf.cell(70, 7, safe_pdf_text(str(row['nome_lojista'])[:30]), 1, 0, 'L')
+        pdf.cell(25, 7, safe_pdf_text(row['bandeira']), 1, 0, 'C')
+        pdf.cell(35, 7, f"{row['bruto_v']:,.2f}", 1, 0, 'R')
+        pdf.cell(35, 7, f"{row['liq_v']:,.2f}", 1, 1, 'R')
     
-    # Retorna o PDF como stream de bytes estável
+    # O SEGREDO: Saída em Bytes usando buffer BytesIO para evitar falha de download
     return pdf.output()
 
 # --- LOGIN ---
@@ -91,8 +100,8 @@ else:
     # --- DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        # Refresh aumentado para não interromper o download
-        st_autorefresh(interval=150000, key="refresh_v228")
+        # Refresh de 5 minutos (evita resetar a página durante o download)
+        st_autorefresh(interval=300000, key="refresh_v229")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -108,10 +117,8 @@ else:
             
             df_v['link'] = df_v['ns'].apply(limpar_ns)
             df_m['link'] = df_m['ns'].apply(limpar_ns)
-            
             df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
             df['nome_lojista'] = df['nome_lojista'].fillna("NAO VINCULADO")
-            df['nome_plano'] = df['nome_plano'].fillna("SEM PLANO")
 
             opcoes_lojistas = sorted(df['nome_lojista'].unique())
             if st.session_state.perfil == "admin":
@@ -124,7 +131,7 @@ else:
             if not df_f.empty:
                 df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
                 
-                # Cálculo de taxas
+                # Puxar taxas e calcular
                 def norm_pl(row):
                     p = str(row['plano']).lower()
                     if 'debito' in p: return 'debito'
@@ -144,25 +151,25 @@ else:
                 st.success(f"Vendas encontradas: {len(df_f)}")
                 k1, k2, k3 = st.columns(3)
                 vb, vl, vq = df_f['bruto_v'].sum(), df_f['liq_v'].sum(), len(df_f)
-                k1.metric("Bruto Total", f"RS {vb:,.2f}")
-                k2.metric("Liquido Total", f"RS {vl:,.2f}")
+                k1.metric("Bruto Total", f"R$ {vb:,.2f}")
+                k2.metric("Liquido Total", f"R$ {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
-                # --- BOTÃO PDF DEFINITIVO ---
+                # --- BOTÃO PDF v229 ---
                 st.divider()
                 try:
-                    # Gera os bytes antes do botão para garantir que o objeto existe
-                    pdf_output = gerar_pdf_bytes(df_f, data_txt, vb, vl, vq)
+                    # Geramos o binário do PDF
+                    binario_pdf = gerar_pdf_final(df_f, data_txt, vb, vl, vq)
                     
                     st.download_button(
                         label="📄 Baixar Relatorio PDF",
-                        data=pdf_output,
+                        data=binario_pdf,
                         file_name=f"Relatorio_{data_txt.replace('/','_')}.pdf",
                         mime="application/pdf",
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error(f"Erro ao preparar download: {e}")
+                    st.error(f"Erro no processamento: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
             else:
@@ -170,4 +177,4 @@ else:
         else:
             st.info(f"Sem vendas para {data_txt}.")
 
-st.sidebar.caption("MJ Soluções v228.0")
+st.sidebar.caption("MJ Soluções v229.0")
