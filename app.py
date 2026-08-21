@@ -14,20 +14,21 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# --- FUNÇÕES DE AUXÍLIO ---
+# --- FUNÇÕES DE AUXÍLIO PARA O PDF ---
 def limpar_ns(val):
     if not val: return ""
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
 def clean_pdf_text(text):
-    """Remove acentos, emojis e caracteres especiais que travam o PDF"""
+    """Limpa textos para evitar erro de encoding no PDF"""
     if not text: return ""
-    # Transforma 'ã' em 'a', 'ç' em 'c', etc.
-    nfkd_form = unicodedata.normalize('NFKD', str(text))
-    # Remove emojis e qualquer coisa que não seja texto simples
-    return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
+    # Remove acentos (Ex: 'ã' vira 'a')
+    text = "".join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
+    # Remove emojis e caracteres não-ASCII
+    return text.encode('ascii', 'ignore').decode('ascii')
 
 def gerar_pdf(df, data_ref, bruto, liquido, qtd):
+    # Inicializa o PDF
     pdf = FPDF()
     pdf.add_page()
     
@@ -35,39 +36,42 @@ def gerar_pdf(df, data_ref, bruto, liquido, qtd):
     pdf.set_font("Helvetica", 'B', 16)
     pdf.cell(190, 10, clean_pdf_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
     pdf.set_font("Helvetica", '', 10)
-    pdf.cell(190, 7, f"Data do Relatorio: {data_ref}", 0, 1, 'C')
+    pdf.cell(190, 7, f"Data: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
     
-    # Bloco de Resumo
+    # Resumo Financeiro
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", 'B', 12)
-    pdf.cell(190, 10, " RESUMO DO PERIODO", 1, 1, 'L', 1)
-    pdf.set_font("Helvetica", '', 11)
-    pdf.cell(63, 10, f"Bruto: R$ {bruto:,.2f}", 1, 0, 'C')
-    pdf.cell(63, 10, f"Liquido: R$ {liquido:,.2f}", 1, 0, 'C')
-    pdf.cell(64, 10, f"Vendas: {qtd}", 1, 1, 'C')
+    pdf.cell(190, 10, " RESUMO GERAL", 1, 1, 'L', 1)
+    pdf.set_font("Helvetica", '', 12)
+    # Usamos 'RS' no PDF para evitar erro com o símbolo do Real em algumas versões
+    pdf.cell(63, 10, clean_pdf_text(f"Bruto: RS {bruto:,.2f}"), 1, 0, 'C')
+    pdf.cell(63, 10, clean_pdf_text(f"Liquido: RS {liquido:,.2f}"), 1, 0, 'C')
+    pdf.cell(64, 10, clean_pdf_text(f"Vendas: {qtd}"), 1, 1, 'C')
     pdf.ln(10)
     
-    # Tabela Detalhada
+    # Cabeçalho da Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(220, 220, 220)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
-    pdf.cell(70, 8, "Lojista", 1, 0, 'C', 1)
+    pdf.cell(75, 8, "Lojista", 1, 0, 'C', 1)
     pdf.cell(25, 8, "Bandeira", 1, 0, 'C', 1)
     pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
-    pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
+    pdf.cell(30, 8, "Liquido", 1, 1, 'C', 1)
     
+    # Linhas da Tabela
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
         pdf.cell(25, 7, clean_pdf_text(row['data_venda']), 1, 0, 'C')
-        pdf.cell(70, 7, clean_pdf_text(row['nome_lojista'][:30]), 1, 0, 'L')
+        pdf.cell(75, 7, clean_pdf_text(row['nome_lojista'][:32]), 1, 0, 'L')
         pdf.cell(25, 7, clean_pdf_text(row['bandeira']), 1, 0, 'C')
-        pdf.cell(35, 7, f"R$ {row['bruto_v']:,.2f}", 1, 0, 'R')
-        pdf.cell(35, 7, f"R$ {row['liq_v']:,.2f}", 1, 1, 'R')
+        pdf.cell(35, 7, clean_pdf_text(f"RS {row['bruto_v']:,.2f}"), 1, 0, 'R')
+        pdf.cell(30, 7, clean_pdf_text(f"RS {row['liq_v']:,.2f}"), 1, 1, 'R')
         
+    # Retorna os bytes do PDF explicitamente
     return pdf.output()
 
-# --- SISTEMA ---
+# --- SISTEMA DE LOGIN ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
@@ -95,7 +99,7 @@ else:
     # --- DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60000, key="refresh_v223")
+        st_autorefresh(interval=60000, key="refresh_v224")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -144,25 +148,26 @@ else:
                 st.success(f"Encontradas {len(df_f)} vendas.")
                 k1, k2, k3 = st.columns(3)
                 vb, vl, vq = df_f['bruto_v'].sum(), df_f['liq_v'].sum(), len(df_f)
-                k1.metric("Bruto Total", f"R$ {vb:,.2f}")
-                k2.metric("Liquido Total", f"R$ {vl:,.2f}")
+                k1.metric("Bruto Total", f"RS {vb:,.2f}")
+                k2.metric("Liquido Total", f"RS {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
-                # --- BOTÃO PDF BLINDADO ---
+                # --- BOTÃO PDF (Ajustado para v224) ---
                 st.divider()
                 try:
-                    pdf_data = gerar_pdf(df_f, data_txt, vb, vl, vq)
+                    # pdf.output() no fpdf2 retorna bytes se não houver nome de arquivo
+                    pdf_output = gerar_pdf(df_f, data_txt, vb, vl, vq)
+                    
                     st.download_button(
                         label="📄 Baixar Relatorio PDF",
-                        data=bytes(pdf_data),
-                        file_name=f"Relatorio_{data_txt.replace('/','-')}.pdf",
+                        data=pdf_output,
+                        file_name=f"Relatorio_MJ_{data_txt.replace('/','-')}.pdf",
                         mime="application/pdf",
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error(f"Erro no PDF: {e}")
+                    st.error(f"Erro ao gerar PDF: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
 
-    # --- ABAS GESTÃO, VINCULAR, PLANOS ---
-    # ... (Mantenha igual você já tinha no v219)
+st.sidebar.caption("MJ Soluções v224.0")
