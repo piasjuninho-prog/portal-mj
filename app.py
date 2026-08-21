@@ -4,7 +4,6 @@ from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 import re
 import unicodedata
-# Forçamos o uso da FPDF2
 from fpdf import FPDF
 
 # 1. CONFIGURAÇÃO INICIAL
@@ -23,17 +22,14 @@ def limpar_ns(val):
 def safe_text(text):
     """Limpeza total de caracteres para evitar erro de encoding no PDF"""
     if text is None: return ""
-    # Remove acentos e converte para ASCII
     nfkd_form = unicodedata.normalize('NFKD', str(text))
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
-def gerar_pdf_v231(df, data_ref, bruto, liquido, qtd):
-    # Inicializa o PDF (FPDF2)
+def gerar_pdf_v232(df, data_ref, bruto, liquido, qtd):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", 'B', 16)
     pdf.cell(190, 10, safe_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
-    
     pdf.set_font("Helvetica", '', 10)
     pdf.cell(190, 7, f"Data: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
@@ -48,7 +44,7 @@ def gerar_pdf_v231(df, data_ref, bruto, liquido, qtd):
     pdf.cell(64, 10, f"Vendas: {qtd}", 1, 1, 'C')
     pdf.ln(5)
     
-    # Cabeçalho Tabela
+    # Tabela
     pdf.set_font("Helvetica", 'B', 9)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
@@ -57,7 +53,6 @@ def gerar_pdf_v231(df, data_ref, bruto, liquido, qtd):
     pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
     pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
     
-    # Linhas
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
         pdf.cell(25, 7, safe_text(row['data_venda']), 1, 0, 'C')
@@ -66,10 +61,11 @@ def gerar_pdf_v231(df, data_ref, bruto, liquido, qtd):
         pdf.cell(35, 7, f"{row['bruto_v']:,.2f}", 1, 0, 'R')
         pdf.cell(35, 7, f"{row['liq_v']:,.2f}", 1, 1, 'R')
     
-    # Retorna os bytes do PDF
-    return pdf.output()
+    # --- MUDANÇA CRÍTICA AQUI ---
+    # Convertemos explicitamente bytearray para bytes
+    return bytes(pdf.output())
 
-# --- LOGIN E SISTEMA ---
+# --- LOGIN ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
@@ -92,7 +88,7 @@ else:
 
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=300000, key="refresh_v231")
+        st_autorefresh(interval=300000, key="refresh_v232")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -145,12 +141,12 @@ else:
                 k3.metric("Qtd Vendas", vq)
                 
                 st.divider()
-                # BOTÃO PDF v231
+                # BOTÃO PDF v232 - FIX DE BINÁRIO
                 try:
-                    pdf_bytes = gerar_pdf_v231(df_f, data_txt, vb, vl, vq)
+                    pdf_output = gerar_pdf_v232(df_f, data_txt, vb, vl, vq)
                     st.download_button(
                         label="📄 Baixar Relatorio PDF",
-                        data=pdf_bytes,
+                        data=pdf_output,
                         file_name=f"Relatorio_{data_txt.replace('/','_')}.pdf",
                         mime="application/pdf",
                         use_container_width=True
@@ -159,10 +155,8 @@ else:
                     st.error(f"Erro no PDF: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
-        else:
-            st.info(f"Sem vendas para {data_txt}.")
 
-    # --- ABAS GESTÃO, VINCULAR E PLANOS (REINTEGRADAS) ---
+    # --- ABA GESTÃO, VINCULAR E PLANOS ---
     elif menu == "🏫 Gestão":
         st.title("🏫 Gestão de Estabelecimentos")
         c1, c2 = st.columns(2)
@@ -205,4 +199,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("✅ Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v231.0")
+st.sidebar.caption("MJ Soluções v232.0")
