@@ -5,7 +5,6 @@ from datetime import datetime, date
 import re
 import unicodedata
 from fpdf import FPDF
-from io import BytesIO
 
 # 1. CONFIGURAÇÃO INICIAL
 st.set_page_config(page_title="Portal MJ PAG PRO", layout="wide", initial_sidebar_state="expanded")
@@ -20,62 +19,54 @@ def limpar_ns(val):
     if not val: return ""
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
-def safe_pdf_text(text):
-    """Converte qualquer texto para ASCII puro para evitar falha no download"""
+def safe_text(text):
+    """Limpeza para evitar erro de caracteres no PDF"""
     if text is None: return ""
-    # Remove acentos (ã -> a)
-    normalized = unicodedata.normalize('NFKD', str(text))
-    # Filtra apenas caracteres básicos
-    ascii_text = "".join([c for c in normalized if not unicodedata.combining(c)])
-    # Remove emojis e caracteres especiais, mantendo apenas o essencial
-    return ascii_text.encode('ascii', 'ignore').decode('ascii').replace('$', 'RS')
+    # Remove acentos e emojis
+    nfkd_form = unicodedata.normalize('NFKD', str(text))
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
-def gerar_pdf_final(df, data_ref, bruto, liquido, qtd):
+def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
+    # Com fpdf2, o output() retorna bytes automaticamente
     pdf = FPDF()
     pdf.add_page()
-    
-    # Configurações de fonte padrão
     pdf.set_font("Helvetica", 'B', 16)
-    pdf.cell(190, 10, safe_pdf_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
-    
+    pdf.cell(190, 10, safe_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
     pdf.set_font("Helvetica", '', 10)
     pdf.cell(190, 7, f"Data: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
     
-    # Bloco de Resumo
+    # Resumo
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", 'B', 12)
     pdf.cell(190, 10, " RESUMO GERAL", 1, 1, 'L', 1)
-    
     pdf.set_font("Helvetica", '', 12)
-    # Formatamos os números antes de enviar para o PDF
-    pdf.cell(63, 10, safe_pdf_text(f"Bruto: RS {bruto:,.2f}"), 1, 0, 'C')
-    pdf.cell(63, 10, safe_pdf_text(f"Liquido: RS {liquido:,.2f}"), 1, 0, 'C')
-    pdf.cell(64, 10, safe_pdf_text(f"Vendas: {qtd}"), 1, 1, 'C')
+    pdf.cell(63, 10, f"Bruto: RS {bruto:,.2f}", 1, 0, 'C')
+    pdf.cell(63, 10, f"Liquido: RS {liquido:,.2f}", 1, 0, 'C')
+    pdf.cell(64, 10, f"Vendas: {qtd}", 1, 1, 'C')
     pdf.ln(5)
     
-    # Cabeçalho da Tabela
+    # Tabela
     pdf.set_font("Helvetica", 'B', 9)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
-    pdf.cell(70, 8, "Estabelecimento", 1, 0, 'C', 1)
+    pdf.cell(70, 8, "Lojista", 1, 0, 'C', 1)
     pdf.cell(25, 8, "Band.", 1, 0, 'C', 1)
-    pdf.cell(35, 8, "Bruto (RS)", 1, 0, 'C', 1)
-    pdf.cell(35, 8, "Liq. (RS)", 1, 1, 'C', 1)
+    pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
+    pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
     
-    # Dados da Tabela
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
-        pdf.cell(25, 7, safe_pdf_text(row['data_venda']), 1, 0, 'C')
-        pdf.cell(70, 7, safe_pdf_text(str(row['nome_lojista'])[:30]), 1, 0, 'L')
-        pdf.cell(25, 7, safe_pdf_text(row['bandeira']), 1, 0, 'C')
+        pdf.cell(25, 7, safe_text(row['data_venda']), 1, 0, 'C')
+        pdf.cell(70, 7, safe_text(str(row['nome_lojista'])[:30]), 1, 0, 'L')
+        pdf.cell(25, 7, safe_text(row['bandeira']), 1, 0, 'C')
         pdf.cell(35, 7, f"{row['bruto_v']:,.2f}", 1, 0, 'R')
         pdf.cell(35, 7, f"{row['liq_v']:,.2f}", 1, 1, 'R')
     
-    # O SEGREDO: Saída em Bytes usando buffer BytesIO para evitar falha de download
+    # pdf.output() no fpdf2 sem argumentos gera bytes
     return pdf.output()
 
-# --- LOGIN ---
+# --- LOGIN E SIDEBAR ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
@@ -90,18 +81,15 @@ if not st.session_state.auth:
                 st.session_state.auth = True; st.session_state.perfil = "cliente"; st.session_state.usuario = res.data[0]['nome_fantasia']; st.rerun()
             else: st.error("❌ Credenciais inválidas.")
 else:
-    # --- BARRA LATERAL ---
     st.sidebar.title(f"👤 {st.session_state.usuario}")
     d_sel = st.sidebar.date_input("Data do Filtro", date.today())
     menu = st.sidebar.radio("MENU", ["🏠 Dashboard", "👤 Vincular", "🏫 Gestão", "📂 Planos", "🚪 Sair"])
     
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
-    # --- DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        # Refresh de 5 minutos (evita resetar a página durante o download)
-        st_autorefresh(interval=300000, key="refresh_v229")
+        st_autorefresh(interval=300000, key="refresh_v230")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -131,7 +119,6 @@ else:
             if not df_f.empty:
                 df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
                 
-                # Puxar taxas e calcular
                 def norm_pl(row):
                     p = str(row['plano']).lower()
                     if 'debito' in p: return 'debito'
@@ -155,26 +142,81 @@ else:
                 k2.metric("Liquido Total", f"R$ {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
-                # --- BOTÃO PDF v229 ---
+                # --- BOTÃO PDF v230 ---
                 st.divider()
                 try:
-                    # Geramos o binário do PDF
-                    binario_pdf = gerar_pdf_final(df_f, data_txt, vb, vl, vq)
-                    
+                    pdf_bytes = gerar_pdf_bytes(df_f, data_txt, vb, vl, vq)
                     st.download_button(
                         label="📄 Baixar Relatorio PDF",
-                        data=binario_pdf,
+                        data=pdf_bytes,
                         file_name=f"Relatorio_{data_txt.replace('/','_')}.pdf",
                         mime="application/pdf",
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
+                    st.error(f"Erro no PDF. Certifique-se de que fpdf2 esta no requirements.txt.")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
-            else:
-                st.warning("Selecione os lojistas.")
-        else:
-            st.info(f"Sem vendas para {data_txt}.")
 
-st.sidebar.caption("MJ Soluções v229.0")
+    # --- ABAS GESTÃO, VINCULAR E PLANOS ---
+    elif menu == "🏫 Gestão":
+        st.title("🏫 Gestão de Estabelecimentos")
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.expander("➕ CADASTRAR NOVO"):
+                with st.form("add"):
+                    n, e = st.text_input("Nome Fantasia"), st.text_input("Email")
+                    if st.form_submit_button("Salvar"):
+                        conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "senha": "12345"}).execute()
+                        st.success("✅ Cadastrado!"); st.rerun()
+        with c2:
+            with st.expander("🗑️ EXCLUIR"):
+                if todos_lojistas:
+                    rem = st.selectbox("Remover:", todos_lojistas)
+                    if st.button("Confirmar Exclusão"):
+                        conn.table("estabelecimentos").delete().eq("nome_fantasia", rem).execute()
+                        st.rerun()
+        res = conn.table("estabelecimentos").select("*").execute()
+        if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
+
+    elif menu == "📂 Planos":
+        st.title("📂 Planos de Taxas")
+        t1, t2 = st.tabs(["📋 Visualizar", "⚙️ Criar/Editar"])
+        res_p = conn.table("planos_mj").select("*").execute()
+        lista_p = sorted([p['nome_plano'] for p in res_p.data]) if res_p.data else []
+        with t1:
+            if lista_p:
+                ps = st.selectbox("Ver Plano:", lista_p)
+                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
+                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
+                if res_t.data:
+                    df_tax = pd.DataFrame(res_t.data)
+                    df_tax['%'] = df_tax['taxa_decimal'].apply(lambda x: f"{x*100:.2f}%")
+                    st.dataframe(pd.pivot_table(df_tax, values='%', index='meio', columns='bandeira', aggfunc='first').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS).fillna("-"), use_container_width=True)
+        with t2:
+            modo = st.radio("Ação:", ["Novo", "Editar"], horizontal=True)
+            nome_f = st.selectbox("Plano:", lista_p) if modo == "Editar" else st.text_input("Nome do Plano")
+            band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
+            mods = ["pix"] if band_s == "pix" else ORDEM_MODALIDADES
+            df_ed = st.data_editor(pd.DataFrame({"Meio": mods, "Venda (%)": 0.0, "Custo (%)": 0.0}), use_container_width=True, hide_index=True)
+            if st.button("💾 Salvar Bandeira"):
+                p_res = conn.table("planos_mj").upsert({"nome_plano": nome_f.upper().strip()}, on_conflict="nome_plano").execute()
+                id_f = p_res.data[0]['id']
+                conn.table("taxas_dos_planos").delete().eq("id_plano", id_f).eq("bandeira", band_s).execute()
+                batch = [{"id_plano": id_f, "bandeira": band_s, "meio": r['Meio'], "taxa_decimal": float(r['Venda (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
+                conn.table("taxas_dos_planos").insert(batch).execute()
+                st.success("✅ Salvo!"); st.rerun()
+
+    elif menu == "👤 Vincular":
+        st.title("👤 Vincular Máquina")
+        res_p = conn.table("planos_mj").select("nome_plano").execute()
+        with st.form("vinc"):
+            c = st.selectbox("Cliente", todos_lojistas)
+            ns_txt = st.text_area("NS / IDs Terminal (separe por vírgula)")
+            pl = st.selectbox("Plano", sorted([p['nome_plano'] for p in res_p.data]) if res_p.data else ["PADRAO"])
+            if st.form_submit_button("Salvar"):
+                for n in ns_txt.split(","):
+                    if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
+                st.success("✅ Vinculado!"); st.rerun()
+
+st.sidebar.caption("MJ Soluções v230.0")
