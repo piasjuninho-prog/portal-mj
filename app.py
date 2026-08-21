@@ -3,6 +3,7 @@ import pandas as pd
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 import re
+import unicodedata
 from fpdf import FPDF
 
 # 1. CONFIGURAÇÃO INICIAL
@@ -19,19 +20,12 @@ def limpar_ns(val):
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
 def clean_pdf_text(text):
-    """Remove emojis e converte acentos para evitar erro Unicode no PDF"""
+    """Remove acentos, emojis e caracteres especiais que travam o PDF"""
     if not text: return ""
-    t = str(text)
-    # Substitui caracteres comuns que travam o PDF padrão
-    replacements = {
-        "⚠️": "!!", "ã": "a", "õ": "o", "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u",
-        "â": "a", "ê": "e", "ô": "o", "ç": "c", "Ã": "A", "Õ": "O", "Á": "A", "É": "E",
-        "Í": "I", "Ó": "O", "Ú": "U", "Ç": "C", "º": ".", "ª": "."
-    }
-    for char, rep in replacements.items():
-        t = t.replace(char, rep)
-    # Codifica para latin-1 ignorando o que sobrar de estranho
-    return t.encode('latin-1', 'replace').decode('latin-1')
+    # Transforma 'ã' em 'a', 'ç' em 'c', etc.
+    nfkd_form = unicodedata.normalize('NFKD', str(text))
+    # Remove emojis e qualquer coisa que não seja texto simples
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
 def gerar_pdf(df, data_ref, bruto, liquido, qtd):
     pdf = FPDF()
@@ -39,41 +33,41 @@ def gerar_pdf(df, data_ref, bruto, liquido, qtd):
     
     # Cabeçalho
     pdf.set_font("Helvetica", 'B', 16)
-    pdf.cell(190, 10, "MJ SOLUCOES - RELATORIO FINANCEIRO", 0, 1, 'C')
+    pdf.cell(190, 10, clean_pdf_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
     pdf.set_font("Helvetica", '', 10)
     pdf.cell(190, 7, f"Data do Relatorio: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
     
-    # Resumo
-    pdf.set_fill_color(200, 220, 255)
+    # Bloco de Resumo
+    pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", 'B', 12)
     pdf.cell(190, 10, " RESUMO DO PERIODO", 1, 1, 'L', 1)
-    pdf.set_font("Helvetica", '', 12)
+    pdf.set_font("Helvetica", '', 11)
     pdf.cell(63, 10, f"Bruto: R$ {bruto:,.2f}", 1, 0, 'C')
     pdf.cell(63, 10, f"Liquido: R$ {liquido:,.2f}", 1, 0, 'C')
     pdf.cell(64, 10, f"Vendas: {qtd}", 1, 1, 'C')
     pdf.ln(10)
     
-    # Tabela
+    # Tabela Detalhada
     pdf.set_font("Helvetica", 'B', 10)
-    pdf.set_fill_color(230, 230, 230)
-    pdf.cell(30, 8, "Data", 1, 0, 'C', 1)
-    pdf.cell(65, 8, "Lojista", 1, 0, 'C', 1)
-    pdf.cell(30, 8, "Bandeira", 1, 0, 'C', 1)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
+    pdf.cell(70, 8, "Lojista", 1, 0, 'C', 1)
+    pdf.cell(25, 8, "Bandeira", 1, 0, 'C', 1)
     pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
-    pdf.cell(30, 8, "Liquido", 1, 1, 'C', 1)
+    pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
     
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
-        pdf.cell(30, 7, clean_pdf_text(row['data_venda']), 1, 0, 'C')
-        pdf.cell(65, 7, clean_pdf_text(row['nome_lojista'][:28]), 1, 0, 'L')
-        pdf.cell(30, 7, clean_pdf_text(row['bandeira']), 1, 0, 'C')
+        pdf.cell(25, 7, clean_pdf_text(row['data_venda']), 1, 0, 'C')
+        pdf.cell(70, 7, clean_pdf_text(row['nome_lojista'][:30]), 1, 0, 'L')
+        pdf.cell(25, 7, clean_pdf_text(row['bandeira']), 1, 0, 'C')
         pdf.cell(35, 7, f"R$ {row['bruto_v']:,.2f}", 1, 0, 'R')
-        pdf.cell(30, 7, f"R$ {row['liq_v']:,.2f}", 1, 1, 'R')
+        pdf.cell(35, 7, f"R$ {row['liq_v']:,.2f}", 1, 1, 'R')
         
     return pdf.output()
 
-# --- CONTROLE DE ACESSO ---
+# --- SISTEMA ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
@@ -98,10 +92,10 @@ else:
     
     if menu == "🚪 Sair": st.session_state.auth = False; st.rerun()
 
-    # --- ABA DASHBOARD ---
+    # --- DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60000, key="refresh_v222")
+        st_autorefresh(interval=60000, key="refresh_v223")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -117,9 +111,8 @@ else:
             
             df_v['link'] = df_v['ns'].apply(limpar_ns)
             df_m['link'] = df_m['ns'].apply(limpar_ns)
-            
             df = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
-            df['nome_lojista'] = df['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
+            df['nome_lojista'] = df['nome_lojista'].fillna("NAO VINCULADO")
 
             opcoes_lojistas = sorted(df['nome_lojista'].unique())
             if st.session_state.perfil == "admin":
@@ -134,10 +127,10 @@ else:
                 
                 def norm_pl(row):
                     p = str(row['plano']).lower()
-                    if 'débito' in p: return 'débito'
+                    if 'debito' in p: return 'debito'
                     if 'pix' in p or str(row['bandeira']).lower() == 'pix': return 'pix'
                     m = re.findall(r'\d+', p)
-                    return f"em {m[0]}x" if m else 'à vista'
+                    return f"em {m[0]}x" if m else 'a vista'
                 
                 df_f['pl_adj'] = df_f.apply(norm_pl, axis=1)
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
@@ -148,42 +141,28 @@ else:
                 df_f['liq_v'] = (df_f['bruto_v'] * (1 - df_f['t_cli'])).round(2)
                 df_f['taxa_txt'] = (df_f['t_cli'] * 100).map("{:.2f}%".format)
 
-                st.success(f"✅ Sucesso! {len(df_f)} vendas vinculadas.")
+                st.success(f"Encontradas {len(df_f)} vendas.")
                 k1, k2, k3 = st.columns(3)
                 vb, vl, vq = df_f['bruto_v'].sum(), df_f['liq_v'].sum(), len(df_f)
                 k1.metric("Bruto Total", f"R$ {vb:,.2f}")
                 k2.metric("Liquido Total", f"R$ {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
-                # --- BOTÃO PDF CORRIGIDO ---
+                # --- BOTÃO PDF BLINDADO ---
                 st.divider()
                 try:
                     pdf_data = gerar_pdf(df_f, data_txt, vb, vl, vq)
                     st.download_button(
-                        label="📄 Baixar Relatório PDF",
+                        label="📄 Baixar Relatorio PDF",
                         data=bytes(pdf_data),
                         file_name=f"Relatorio_{data_txt.replace('/','-')}.pdf",
                         mime="application/pdf",
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error(f"Erro ao gerar PDF: Caractere inválido detectado.")
+                    st.error(f"Erro no PDF: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
-            else:
-                st.warning("Selecione os lojistas.")
-        else:
-            st.info(f"Sem vendas para {data_txt}.")
 
-    # --- ABAS DE GESTÃO E PLANOS ---
-    elif menu == "🏫 Gestão":
-        st.title("🏫 Gestão de Lojistas")
-        # (Código de gestão mantido conforme v219)
-    elif menu == "📂 Planos":
-        st.title("📂 Planos de Taxas")
-        # (Código de planos mantido conforme v219)
-    elif menu == "👤 Vincular":
-        st.title("👤 Vincular Máquina")
-        # (Código de vínculo mantido conforme v219)
-
-st.sidebar.caption("MJ Soluções v222.0")
+    # --- ABAS GESTÃO, VINCULAR, PLANOS ---
+    # ... (Mantenha igual você já tinha no v219)
