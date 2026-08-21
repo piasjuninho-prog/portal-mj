@@ -4,6 +4,7 @@ from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date
 import re
 import unicodedata
+# Forçamos o uso da FPDF2
 from fpdf import FPDF
 
 # 1. CONFIGURAÇÃO INICIAL
@@ -20,18 +21,19 @@ def limpar_ns(val):
     return re.sub(r'[^A-Z0-9]', '', str(val).strip().upper()).lstrip('0')
 
 def safe_text(text):
-    """Limpeza para evitar erro de caracteres no PDF"""
+    """Limpeza total de caracteres para evitar erro de encoding no PDF"""
     if text is None: return ""
-    # Remove acentos e emojis
+    # Remove acentos e converte para ASCII
     nfkd_form = unicodedata.normalize('NFKD', str(text))
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
-def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
-    # Com fpdf2, o output() retorna bytes automaticamente
+def gerar_pdf_v231(df, data_ref, bruto, liquido, qtd):
+    # Inicializa o PDF (FPDF2)
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", 'B', 16)
     pdf.cell(190, 10, safe_text("MJ SOLUCOES - RELATORIO FINANCEIRO"), 0, 1, 'C')
+    
     pdf.set_font("Helvetica", '', 10)
     pdf.cell(190, 7, f"Data: {data_ref}", 0, 1, 'C')
     pdf.ln(10)
@@ -46,7 +48,7 @@ def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
     pdf.cell(64, 10, f"Vendas: {qtd}", 1, 1, 'C')
     pdf.ln(5)
     
-    # Tabela
+    # Cabeçalho Tabela
     pdf.set_font("Helvetica", 'B', 9)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(25, 8, "Data", 1, 0, 'C', 1)
@@ -55,6 +57,7 @@ def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
     pdf.cell(35, 8, "Bruto", 1, 0, 'C', 1)
     pdf.cell(35, 8, "Liquido", 1, 1, 'C', 1)
     
+    # Linhas
     pdf.set_font("Helvetica", '', 8)
     for _, row in df.iterrows():
         pdf.cell(25, 7, safe_text(row['data_venda']), 1, 0, 'C')
@@ -63,10 +66,10 @@ def gerar_pdf_bytes(df, data_ref, bruto, liquido, qtd):
         pdf.cell(35, 7, f"{row['bruto_v']:,.2f}", 1, 0, 'R')
         pdf.cell(35, 7, f"{row['liq_v']:,.2f}", 1, 1, 'R')
     
-    # pdf.output() no fpdf2 sem argumentos gera bytes
+    # Retorna os bytes do PDF
     return pdf.output()
 
-# --- LOGIN E SIDEBAR ---
+# --- LOGIN E SISTEMA ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
@@ -89,7 +92,7 @@ else:
 
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=300000, key="refresh_v230")
+        st_autorefresh(interval=300000, key="refresh_v231")
         st.title("📊 Dashboard Financeiro")
         
         data_txt = d_sel.strftime('%d/%m/%Y')
@@ -118,7 +121,6 @@ else:
 
             if not df_f.empty:
                 df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
-                
                 def norm_pl(row):
                     p = str(row['plano']).lower()
                     if 'debito' in p: return 'debito'
@@ -142,10 +144,10 @@ else:
                 k2.metric("Liquido Total", f"R$ {vl:,.2f}")
                 k3.metric("Qtd Vendas", vq)
                 
-                # --- BOTÃO PDF v230 ---
                 st.divider()
+                # BOTÃO PDF v231
                 try:
-                    pdf_bytes = gerar_pdf_bytes(df_f, data_txt, vb, vl, vq)
+                    pdf_bytes = gerar_pdf_v231(df_f, data_txt, vb, vl, vq)
                     st.download_button(
                         label="📄 Baixar Relatorio PDF",
                         data=pdf_bytes,
@@ -154,11 +156,13 @@ else:
                         use_container_width=True
                     )
                 except Exception as e:
-                    st.error(f"Erro no PDF. Certifique-se de que fpdf2 esta no requirements.txt.")
+                    st.error(f"Erro no PDF: {e}")
 
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'adquirente', 'bandeira', 'plano', 'bruto_v', 'taxa_txt', 'liq_v']], use_container_width=True)
+        else:
+            st.info(f"Sem vendas para {data_txt}.")
 
-    # --- ABAS GESTÃO, VINCULAR E PLANOS ---
+    # --- ABAS GESTÃO, VINCULAR E PLANOS (REINTEGRADAS) ---
     elif menu == "🏫 Gestão":
         st.title("🏫 Gestão de Estabelecimentos")
         c1, c2 = st.columns(2)
@@ -169,43 +173,25 @@ else:
                     if st.form_submit_button("Salvar"):
                         conn.table("estabelecimentos").insert({"nome_fantasia": n.upper().strip(), "email": e.lower().strip(), "senha": "12345"}).execute()
                         st.success("✅ Cadastrado!"); st.rerun()
-        with c2:
-            with st.expander("🗑️ EXCLUIR"):
-                if todos_lojistas:
-                    rem = st.selectbox("Remover:", todos_lojistas)
-                    if st.button("Confirmar Exclusão"):
-                        conn.table("estabelecimentos").delete().eq("nome_fantasia", rem).execute()
-                        st.rerun()
         res = conn.table("estabelecimentos").select("*").execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True, hide_index=True)
 
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
-        t1, t2 = st.tabs(["📋 Visualizar", "⚙️ Criar/Editar"])
+        modo = st.radio("Ação:", ["Novo", "Editar"], horizontal=True)
         res_p = conn.table("planos_mj").select("*").execute()
         lista_p = sorted([p['nome_plano'] for p in res_p.data]) if res_p.data else []
-        with t1:
-            if lista_p:
-                ps = st.selectbox("Ver Plano:", lista_p)
-                id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
-                res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
-                if res_t.data:
-                    df_tax = pd.DataFrame(res_t.data)
-                    df_tax['%'] = df_tax['taxa_decimal'].apply(lambda x: f"{x*100:.2f}%")
-                    st.dataframe(pd.pivot_table(df_tax, values='%', index='meio', columns='bandeira', aggfunc='first').reindex(index=ORDEM_MODALIDADES, columns=ORDEM_BANDEIRAS).fillna("-"), use_container_width=True)
-        with t2:
-            modo = st.radio("Ação:", ["Novo", "Editar"], horizontal=True)
-            nome_f = st.selectbox("Plano:", lista_p) if modo == "Editar" else st.text_input("Nome do Plano")
-            band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
-            mods = ["pix"] if band_s == "pix" else ORDEM_MODALIDADES
-            df_ed = st.data_editor(pd.DataFrame({"Meio": mods, "Venda (%)": 0.0, "Custo (%)": 0.0}), use_container_width=True, hide_index=True)
-            if st.button("💾 Salvar Bandeira"):
-                p_res = conn.table("planos_mj").upsert({"nome_plano": nome_f.upper().strip()}, on_conflict="nome_plano").execute()
-                id_f = p_res.data[0]['id']
-                conn.table("taxas_dos_planos").delete().eq("id_plano", id_f).eq("bandeira", band_s).execute()
-                batch = [{"id_plano": id_f, "bandeira": band_s, "meio": r['Meio'], "taxa_decimal": float(r['Venda (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
-                conn.table("taxas_dos_planos").insert(batch).execute()
-                st.success("✅ Salvo!"); st.rerun()
+        nome_f = st.selectbox("Plano:", lista_p) if modo == "Editar" else st.text_input("Nome do Plano")
+        band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
+        mods = ["pix"] if band_s == "pix" else ORDEM_MODALIDADES
+        df_ed = st.data_editor(pd.DataFrame({"Meio": mods, "Venda (%)": 0.0, "Custo (%)": 0.0}), use_container_width=True, hide_index=True)
+        if st.button("💾 Salvar"):
+            p_res = conn.table("planos_mj").upsert({"nome_plano": nome_f.upper().strip()}, on_conflict="nome_plano").execute()
+            id_f = p_res.data[0]['id']
+            conn.table("taxas_dos_planos").delete().eq("id_plano", id_f).eq("bandeira", band_s).execute()
+            batch = [{"id_plano": id_f, "bandeira": band_s, "meio": r['Meio'], "taxa_decimal": float(r['Venda (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
+            conn.table("taxas_dos_planos").insert(batch).execute()
+            st.success("✅ Salvo!"); st.rerun()
 
     elif menu == "👤 Vincular":
         st.title("👤 Vincular Máquina")
@@ -219,4 +205,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("✅ Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v230.0")
+st.sidebar.caption("MJ Soluções v231.0")
