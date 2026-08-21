@@ -14,8 +14,12 @@ SUPABASE_URL = "https://oiuyklgtcazbtuvwmelv.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdXlrbGd0Y2F6YnR1dndtZWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTg2MjMsImV4cCI6MjA4OTg5NDYyM30.tzIPjSDlKLg5h12lbUYKt-NsYH85cP-WNiWUtGsIyKc"
 conn = st.connection("supabase", type=SupabaseConnection, url=SUPABASE_URL, key=SUPABASE_KEY)
 
-# --- CONSTANTES ---
-ORDEM_MODALIDADES = ["pix", "débito", "à vista", "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", "em 10x", "em 11x", "em 12x"]
+# --- CONSTANTES ATUALIZADAS (Até 18x) ---
+ORDEM_MODALIDADES = [
+    "pix", "débito", "à vista", 
+    "em 2x", "em 3x", "em 4x", "em 5x", "em 6x", "em 7x", "em 8x", "em 9x", 
+    "em 10x", "em 11x", "em 12x", "em 13x", "em 14x", "em 15x", "em 16x", "em 17x", "em 18x"
+]
 ORDEM_BANDEIRAS = ["mastercard", "visa", "elo", "amex", "hipercard", "pix", "picpay"]
 
 def limpar_ns(val):
@@ -28,7 +32,7 @@ def safe_text(text):
     nfkd_form = unicodedata.normalize('NFKD', text)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).encode('ascii', 'ignore').decode('ascii')
 
-def gerar_pdf_v240(df, data_ref, bruto, liquido, qtd):
+def gerar_pdf_v241(df, data_ref, bruto, liquido, qtd):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     pdf.set_font("Helvetica", 'B', 18)
@@ -79,7 +83,7 @@ else:
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=300000, key="refresh_v240")
+        st_autorefresh(interval=300000, key="refresh_v241")
         st.title("📊 Dashboard Financeiro")
         data_txt = d_sel.strftime('%d/%m/%Y')
         v_res = conn.table("vendas").select("*").ilike("data_venda", f"%{data_txt}%").execute()
@@ -108,6 +112,7 @@ else:
                     if 'à vista' in p or 'a vista' in p or ('crédito' in p and 'x' not in p): return 'à vista'
                     m = re.findall(r'\d+', p)
                     return f"em {m[0]}x" if m else 'à vista'
+                
                 df_f['pl_adj'] = df_f.apply(norm_pl, axis=1)
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df_f = pd.merge(df_f, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
@@ -122,7 +127,7 @@ else:
                 
                 st.divider()
                 try:
-                    pdf_bytes = gerar_pdf_v240(df_f, data_txt, vb, vl, vq)
+                    pdf_bytes = gerar_pdf_v241(df_f, data_txt, vb, vl, vq)
                     st.download_button("📄 PDF Detalhado", pdf_bytes, f"Relatorio_{data_txt.replace('/','_')}.pdf", "application/pdf", use_container_width=True)
                 except: st.error("Erro no PDF.")
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'ns', 'bandeira', 'plano', 'taxa_txt', 'bruto_v', 'liq_v']], use_container_width=True)
@@ -136,7 +141,7 @@ else:
         with t1:
             if res_e.data:
                 df_est = pd.DataFrame(res_e.data)
-                df_edit = st.data_editor(df_est, use_container_width=True, hide_index=True, key="gestao_editor", column_config={"id": st.column_config.Column(disabled=True)})
+                df_edit = st.data_editor(df_est, use_container_width=True, hide_index=True, key="gestao_ed", column_config={"id": st.column_config.Column(disabled=True)})
                 if st.button("💾 Salvar Alterações"):
                     for idx, row in df_edit.iterrows():
                         orig = df_est[df_est['id'] == row['id']].iloc[0]
@@ -155,7 +160,7 @@ else:
                 conn.table("estabelecimentos").delete().eq("nome_fantasia", lojista_del).execute()
                 st.rerun()
 
-    # --- ABA PLANOS (FIX DE DUPLICIDADE) ---
+    # --- ABA PLANOS (ATUALIZADA ATÉ 18X) ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute()
@@ -164,31 +169,29 @@ else:
         
         with t1:
             if lista_p:
-                ps = st.selectbox("Selecione o plano para ver:", lista_p, key="view_plano_sb")
+                ps = st.selectbox("Selecione o plano:", lista_p, key="view_pl")
                 id_p = next(p['id'] for p in res_p.data if p['nome_plano'] == ps)
                 res_t = conn.table("taxas_dos_planos").select("*").eq("id_plano", id_p).execute()
                 if res_t.data:
                     df_tax = pd.DataFrame(res_t.data)
                     df_tax['%'] = df_tax['taxa_decimal'].apply(lambda x: f"{x*100:.2f}%")
-                    st.dataframe(pd.pivot_table(df_tax, values='%', index='meio', columns='bandeira', aggfunc='first').fillna("-"), use_container_width=True)
+                    # Reordena para ficar bonito
+                    pivot = pd.pivot_table(df_tax, values='%', index='meio', columns='bandeira', aggfunc='first').fillna("-")
+                    st.dataframe(pivot.reindex(index=ORDEM_MODALIDADES).dropna(how='all'), use_container_width=True)
         
         with t2:
-            modo = st.radio("Ação:", ["Editar Plano Existente", "Criar Novo Plano"], horizontal=True, key="modo_plano_radio")
-            if modo == "Editar Plano Existente":
-                nome_f = st.selectbox("Escolha o plano:", lista_p, key="edit_plano_sb")
-            else:
-                nome_f = st.text_input("Nome do Novo Plano:", key="new_plano_name")
+            modo = st.radio("Ação:", ["Editar Plano", "Criar Novo"], horizontal=True)
+            nome_f = st.selectbox("Plano:", lista_p, key="edit_pl") if modo == "Editar Plano" else st.text_input("Nome do Novo Plano:")
+            band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS)
             
-            band_s = st.selectbox("Bandeira:", ORDEM_BANDEIRAS, key="band_plan_sb")
-            
-            # Tentar carregar taxas existentes para facilitar edição
+            # Carregar taxas atuais
             taxas_atuais = []
-            if modo == "Editar Plano Existente":
+            if modo == "Editar Plano" and nome_f:
                 id_f = next(p['id'] for p in res_p.data if p['nome_plano'] == nome_f)
                 res_atuais = conn.table("taxas_dos_planos").select("meio, taxa_decimal").eq("id_plano", id_f).eq("bandeira", band_s).execute()
                 taxas_atuais = res_atuais.data
 
-            mods = ["pix"] if band_s == "pix" else ORDEM_MODALIDADES
+            mods = ["pix"] if band_s == "pix" else [m for m in ORDEM_MODALIDADES if m != "pix"]
             df_base = pd.DataFrame({"Meio": mods, "Taxa (%)": 0.0})
             
             if taxas_atuais:
@@ -197,15 +200,15 @@ else:
                 df_base = pd.merge(df_base[['Meio']], df_atuais[['meio', 'Taxa (%)']], left_on='Meio', right_on='meio', how='left').fillna(0)
                 df_base = df_base[['Meio', 'Taxa (%)']]
 
-            df_ed = st.data_editor(df_base, use_container_width=True, hide_index=True, key="planos_editor")
+            df_ed = st.data_editor(df_base, use_container_width=True, hide_index=True, key="pl_editor")
             
-            if st.button("💾 Salvar Taxas da Bandeira"):
+            if st.button("💾 Salvar Bandeira"):
                 p_res = conn.table("planos_mj").upsert({"nome_plano": nome_f.upper()}, on_conflict="nome_plano").execute()
                 id_f = p_res.data[0]['id']
                 conn.table("taxas_dos_planos").delete().eq("id_plano", id_f).eq("bandeira", band_s).execute()
                 batch = [{"id_plano": id_f, "bandeira": band_s, "meio": r['Meio'], "taxa_decimal": float(r['Taxa (%)'])/100} for _, r in df_ed.iterrows()]
                 conn.table("taxas_dos_planos").insert(batch).execute()
-                st.success("✅ Taxas salvas com sucesso!"); st.rerun()
+                st.success("Salvo!"); st.rerun()
 
     # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
@@ -221,4 +224,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v240.0")
+st.sidebar.caption("MJ Soluções v241.0")
