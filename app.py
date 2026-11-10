@@ -78,11 +78,10 @@ else:
     # --- ABA DASHBOARD ---
     elif menu == "🏠 Dashboard":
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=300000, key="refresh_v247")
+        st_autorefresh(interval=300000, key="refresh_v248")
         st.title("📊 Dashboard Financeiro")
         data_txt = d_sel.strftime('%d/%m/%Y')
         
-        # Coleta de dados
         v_res = conn.table("vendas").select("*").ilike("data_venda", f"%{data_txt}%").execute()
         m_res = conn.table("maquinas_ns").select("*").execute()
         
@@ -91,7 +90,6 @@ else:
             df_m = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['ns', 'nome_lojista', 'nome_plano'])
             df_v['link'], df_m['link'] = df_v['ns'].apply(limpar_ns), df_m['ns'].apply(limpar_ns)
             
-            # Auditoria de Vínculo
             df_audit = pd.merge(df_v, df_m[['link', 'nome_lojista', 'nome_plano']], on='link', how='left')
             df_audit['nome_lojista'] = df_audit['nome_lojista'].fillna("⚠️ NÃO VINCULADO")
             
@@ -101,14 +99,12 @@ else:
                 resumo_sem_vinc = vendas_sem_dono.groupby('ns').size().reset_index(name='Qtd')
                 st.table(resumo_sem_vinc)
             
-            # Filtros Sidebar
             opcoes = sorted(df_audit['nome_lojista'].unique())
             esc = st.sidebar.multiselect("Filtrar Lojistas:", opcoes, default=opcoes) if st.session_state.perfil == "admin" else [st.session_state.usuario]
             
             df_f = df_audit[df_audit['nome_lojista'].isin(esc)].copy()
 
             if not df_f.empty:
-                # Carregar Planos
                 p_res = conn.table("planos_mj").select("id, nome_plano").execute()
                 t_res = conn.table("taxas_dos_planos").select("*").execute()
                 df_p = pd.DataFrame(p_res.data).rename(columns={'id':'id_p'})
@@ -116,50 +112,30 @@ else:
                 
                 df_f = pd.merge(df_f, df_p, on='nome_plano', how='left')
                 
-                # --- O CÉREBRO: FUNÇÃO INFALÍVEL PARA PLANOS ---
                 def norm_pl(row):
                     p = str(row['plano']).lower()
                     b = str(row['bandeira']).lower()
-                    
-                    # 1. Checa PIX primeiro
-                    if 'pix' in p or 'pix' in b:
-                        return 'pix'
-                    
-                    # 2. Checa DÉBITO (ignora "à vista" se tiver débito junto)
-                    if 'débito' in p or 'debito' in p:
-                        return 'débito'
-                        
-                    # 3. Checa CRÉDITO À VISTA / 1X
-                    if 'vista' in p or '1x' in p:
-                        return 'à vista'
-                        
-                    # 4. Checa PARCELADOS
+                    if 'pix' in p or 'pix' in b: return 'pix'
+                    if 'débito' in p or 'debito' in p: return 'débito'
+                    if 'vista' in p or '1x' in p: return 'à vista'
                     nums = re.findall(r'\d+', p)
                     if nums:
                         parc = int(nums[0])
-                        if parc == 1:
-                            return 'à vista'
+                        if parc == 1: return 'à vista'
                         return f"em {parc}x"
-                        
-                    # 5. Padrão se não achar nada
                     return 'à vista'
                 
                 df_f['pl_adj'] = df_f.apply(norm_pl, axis=1)
-                
-                # Cruzamento de Taxas
                 df_t_c = df_t.drop_duplicates(subset=['id_plano','bandeira','meio']).rename(columns={'bandeira':'b_p','meio':'m_p'})
                 df_f = pd.merge(df_f, df_t_c, left_on=['id_p','bandeira','pl_adj'], right_on=['id_plano','b_p','m_p'], how='left')
                 
-                # Cálculos
                 df_f['bruto_v'] = pd.to_numeric(df_f['bruto'], errors='coerce').fillna(0)
                 df_f['t_cli'] = pd.to_numeric(df_f['taxa_decimal'], errors='coerce').fillna(0)
                 df_f['t_cus'] = pd.to_numeric(df_f.get('custo_decimal', 0), errors='coerce').fillna(0)
-                
                 df_f['liq_v'] = (df_f['bruto_v'] * (1 - df_f['t_cli'])).round(2)
                 df_f['lucro_v'] = (df_f['bruto_v'] * (df_f['t_cli'] - df_f['t_cus'])).round(2)
                 df_f['taxa_txt'] = (df_f['t_cli'] * 100).map("{:.2f}%".format)
 
-                # Mostrar Cards
                 c1, c2, c3, c4 = st.columns(4)
                 vb, vl, vlu, vq = df_f['bruto_v'].sum(), df_f['liq_v'].sum(), df_f['lucro_v'].sum(), len(df_f)
                 c1.metric("Bruto Total", f"R$ {vb:,.2f}"); c2.metric("Liquido Total", f"R$ {vl:,.2f}"); c3.metric("Vendas", vq)
@@ -171,31 +147,63 @@ else:
                     st.download_button("📄 Baixar PDF Detalhado", pdf, f"Relatorio_{data_txt.replace('/','_')}.pdf", "application/pdf", use_container_width=True)
                 except: st.error("Erro no PDF.")
                 
-                # Mostrar tabela com a coluna original e a "ajustada" para auditoria visual
                 st.dataframe(df_f[['data_venda', 'nome_lojista', 'ns', 'bandeira', 'pl_adj', 'taxa_txt', 'bruto_v', 'liq_v']].rename(columns={'pl_adj':'plano (mapeado)'}), use_container_width=True)
                 
-                # Alerta se houver taxa zero
                 vendas_zeradas = df_f[df_f['t_cli'] == 0.0]
                 if not vendas_zeradas.empty and len(vendas_zeradas) > 0:
                     st.warning(f"⚠️ {len(vendas_zeradas)} vendas estão com taxa 0%. Verifique se a taxa foi cadastrada corretamente na aba 'Planos'.")
-            else:
-                st.info("Nenhuma venda para exibir.")
-        else:
-            st.info(f"Sem vendas para {data_txt}.")
+            else: st.info("Nenhuma venda para exibir.")
+        else: st.info(f"Sem vendas para {data_txt}.")
 
-    # --- ABAS GESTÃO, VINCULAR, PLANOS ---
+    # --- ABA GESTÃO (v248: COM BOTÃO DE ADICIONAR E ABAS) ---
     elif menu == "🏫 Gestão":
-        st.title("🏫 Gestão")
-        df_est = pd.DataFrame(res_est.data)
-        df_ed = st.data_editor(df_est, use_container_width=True, hide_index=True, key="ed_gest", column_config={"id": st.column_config.Column(disabled=True)})
-        if st.button("💾 Salvar Alterações"):
-            for idx, row in df_ed.iterrows():
-                conn.table("estabelecimentos").update({"nome_fantasia": str(row['nome_fantasia']).upper(), "email": str(row['email']).lower(), "senha": str(row['senha'])}).eq("id", row['id']).execute()
-            st.rerun()
-        if todos_lojistas:
-            rem = st.selectbox("Excluir Lojista:", todos_lojistas)
-            if st.button("❌ EXCLUIR"): conn.table("estabelecimentos").delete().eq("nome_fantasia", rem).execute(); st.rerun()
+        st.title("🏫 Gestão de Lojistas")
+        
+        # Criação de 3 abas para organizar a tela
+        tab_editar, tab_novo, tab_excluir = st.tabs(["📋 Visualizar e Editar", "➕ Adicionar Cliente", "🗑️ Excluir"])
+        
+        with tab_editar:
+            st.info("💡 Edite os dados diretamente na tabela e clique em Salvar.")
+            df_est = pd.DataFrame(res_est.data)
+            df_ed = st.data_editor(df_est, use_container_width=True, hide_index=True, key="ed_gest", column_config={"id": st.column_config.Column(disabled=True)})
+            if st.button("💾 Salvar Alterações na Tabela"):
+                for idx, row in df_ed.iterrows():
+                    conn.table("estabelecimentos").update({
+                        "nome_fantasia": str(row['nome_fantasia']).upper(), 
+                        "email": str(row['email']).lower(), 
+                        "senha": str(row['senha'])
+                    }).eq("id", row['id']).execute()
+                st.success("Alterações salvas com sucesso!"); st.rerun()
 
+        with tab_novo:
+            with st.form("form_novo_cliente"):
+                st.subheader("Novo Cliente")
+                n = st.text_input("Nome Fantasia (Será usado no portal)")
+                e = st.text_input("Email (Login)")
+                s = st.text_input("Senha Inicial", value="12345")
+                c = st.text_input("CNPJ/CPF (Opcional)")
+                
+                if st.form_submit_button("CADASTRAR NOVO CLIENTE"):
+                    if n and e:
+                        conn.table("estabelecimentos").insert({
+                            "nome_fantasia": n.upper().strip(), 
+                            "email": e.lower().strip(), 
+                            "senha": s,
+                            "cnpj_cpf": c
+                        }).execute()
+                        st.success(f"Lojista '{n.upper()}' cadastrado com sucesso!"); st.rerun()
+                    else:
+                        st.error("Nome e E-mail são obrigatórios.")
+
+        with tab_excluir:
+            if todos_lojistas:
+                st.warning("⚠️ Atenção: A exclusão é permanente.")
+                rem = st.selectbox("Selecione o Lojista para Excluir:", todos_lojistas)
+                if st.button("❌ CONFIRMAR EXCLUSÃO"): 
+                    conn.table("estabelecimentos").delete().eq("nome_fantasia", rem).execute()
+                    st.success("Lojista removido!"); st.rerun()
+
+    # --- ABA PLANOS ---
     elif menu == "📂 Planos":
         st.title("📂 Planos de Taxas")
         res_p = conn.table("planos_mj").select("*").execute(); lista_p = sorted([p['nome_plano'] for p in res_p.data])
@@ -225,6 +233,7 @@ else:
                 batch = [{"id_plano": id_f, "bandeira": band_s, "meio": r['Meio'], "taxa_decimal": float(r['Venda (%)'])/100, "custo_decimal": float(r['Custo (%)'])/100} for _, r in df_ed.iterrows()]
                 conn.table("taxas_dos_planos").insert(batch).execute(); st.success("Salvo!"); st.rerun()
 
+    # --- ABA VINCULAR ---
     elif menu == "👤 Vincular":
         st.title("👤 Vincular")
         res_lo = conn.table("estabelecimentos").select("nome_fantasia").execute()
@@ -237,4 +246,4 @@ else:
                     if n.strip(): conn.table("maquinas_ns").upsert({"ns": limpar_ns(n), "nome_lojista": c, "nome_plano": pl}).execute()
                 st.success("Vinculado!"); st.rerun()
 
-st.sidebar.caption("MJ Soluções v247.0")
+st.sidebar.caption("MJ Soluções v248.0")
